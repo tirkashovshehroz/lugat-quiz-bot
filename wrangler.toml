@@ -1,5 +1,5 @@
 name = "lugat-quiz-bot"
-main = "src/index.js"
+main = "index.js"
 compatibility_date = "2025-04-01"
 
 [[durable_objects.bindings]]
