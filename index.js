@@ -44,6 +44,7 @@ const ADMIN_COMMANDS = [
   { command: "reklama", description: "📣 Reklama boshqaruvi" },
   { command: "stat", description: "📊 Bot statistikasi" },
   { command: "setguide", description: "📖 Yo'riqnomani yangilash" },
+  { command: "bans", description: "🚫 Bloklanganlar ro'yxati" },
   { command: "guide", description: "Yo'riqnoma (PDF)" },
   { command: "stop", description: "Testni to'xtatish" },
   { command: "cancel", description: "Bekor qilish" },
@@ -116,6 +117,26 @@ async function webhookSecret(env) {
   return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
 }
 
+// ---------------- Moderatsiya ----------------
+// Taqiqlangan mavzular: erotika, giyohvandlik, qurol, terror, qimor va h.k. (o'zbek, rus, ingliz, turk tillarida).
+// Topilsa test darhol bloklanmaydi — muallif ko'rib chiqishi uchun ushlab turiladi.
+const BAD_WORDS = [
+  "porno", "porn", "xxx", "erotik", "erotic", "эрот", "порн", "секс", "seks", "sex", "hentai", "nude", "naked", "onlyfans",
+  "yalang'och", "yalangoch", "fahsh", "fohisha", "intim", "orgazm", "orgasm", "sikish", "jalab", "qanjiq", "сиськ", "трах", "голая", "голые",
+  "narkotik", "наркот", "giyohvand", "geroin", "героин", "kokain", "кокаин", "marixuana", "марихуан", "amfetamin", "амфетамин", "zakladka", "закладк",
+  "terror", "террор", "jihod", "джихад", "bomba yasash", "portlovchi", "взрывчат", "qurol sotish", "оружие купить",
+  "kazino", "казино", "casino", "1xbet", "stavka qil", "ставки на спорт",
+];
+export function badWord(texts) {
+  const t = " " + texts.filter(Boolean).join(" ").toLowerCase().replace(/[‘’`ʻ]/g, "'") + " ";
+  return BAD_WORDS.find((w) => t.includes(w)) || null;
+}
+function quizTexts(q) {
+  const out = [q.title, q.description];
+  for (const x of q.questions || []) out.push(x.q, ...(x.opts || []));
+  return out;
+}
+
 // Lug'atdan savollar tuzish (test yaratilganda bir marta)
 export function buildQuestions(pairs, count, direction) {
   const chosen = sample(pairs, Math.min(count, pairs.length, MAX_QUESTIONS));
@@ -157,7 +178,7 @@ export class Store extends DurableObject {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS quizzes(id TEXT PRIMARY KEY, owner INTEGER, title TEXT,
       pairs TEXT, count INTEGER, direction TEXT, timer INTEGER, created INTEGER)`);
-    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER", "public INTEGER DEFAULT 0"]) {
+    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER", "public INTEGER DEFAULT 0", "status TEXT DEFAULT 'ok'"]) {
       try { this.sql.exec(`ALTER TABLE quizzes ADD COLUMN ${col}`); } catch {}
     }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
@@ -166,6 +187,7 @@ export class Store extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS ads(id INTEGER PRIMARY KEY AUTOINCREMENT, fromChat INTEGER, msgIds TEXT, pin INTEGER,
       title TEXT, created INTEGER, expires INTEGER, active INTEGER DEFAULT 1, sent INTEGER DEFAULT 0, fail INTEGER DEFAULT 0)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS deliveries(ad INTEGER, uid INTEGER, msgs TEXT, PRIMARY KEY(ad, uid))`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS bans(uid INTEGER PRIMARY KEY, name TEXT, reason TEXT, created INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS results(qid TEXT, uid INTEGER, name TEXT, ok INTEGER, total INTEGER,
       secs REAL, created INTEGER, PRIMARY KEY(qid, uid))`);
     // Avvaldan bor foydalanuvchilarni (test yaratgan va yechganlar) ro'yxatga qo'shamiz
@@ -198,7 +220,7 @@ export class Store extends DurableObject {
     return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT 30", owner).toArray();
   }
   catalog(owner, offset, n) {
-    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? AND public=1 ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
+    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? AND public=1 AND status='ok' ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
   }
   countByOwner(owner) {
     return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=? AND public=1", owner).toArray()[0].n;
@@ -212,6 +234,26 @@ export class Store extends DurableObject {
     this.sql.exec("DELETE FROM deliveries WHERE uid=?", uid);
     this.sql.exec("DELETE FROM users WHERE uid=?", uid);
     return { quizzes: own.length, posts: own.map((q) => q.chanMsg).filter(Boolean) };
+  }
+  setStatus(id, s) {
+    this.sql.exec("UPDATE quizzes SET status=? WHERE id=?", s, id);
+  }
+  adminDeleteQuiz(id) {
+    const q = this.sql.exec("SELECT chanMsg FROM quizzes WHERE id=?", id).toArray()[0];
+    this.sql.exec("DELETE FROM quizzes WHERE id=?", id);
+    this.sql.exec("DELETE FROM results WHERE qid=?", id);
+    return q?.chanMsg || null;
+  }
+  ban(uid, name, reason) {
+    this.sql.exec("INSERT OR REPLACE INTO bans VALUES(?,?,?,?)", uid, name || "", reason || "", Date.now());
+  }
+  unban(uid) {
+    const n = this.sql.exec("SELECT uid FROM bans WHERE uid=?", uid).toArray().length;
+    this.sql.exec("DELETE FROM bans WHERE uid=?", uid);
+    return n > 0;
+  }
+  bans() {
+    return this.sql.exec("SELECT * FROM bans ORDER BY created DESC LIMIT 50").toArray();
   }
   setPublic(id, v) {
     this.sql.exec("UPDATE quizzes SET public=? WHERE id=?", v ? 1 : 0, id);
@@ -400,6 +442,19 @@ export class Chat extends DurableObject {
       { reply_markup: kb([[{ text: "✉️ Muallifga yozish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
   }
 
+  // Foydalanuvchini bloklash/blokdan chiqarish (muallif tomonidan chaqiriladi)
+  async setBanned(v, chatId) {
+    this.chatId = chatId;
+    await this.st.put("chatId", chatId);
+    if (v) {
+      await this.st.put("banned", true);
+      for (const k of ["sess", "create", "edit", "retry"]) await this.st.delete(k);
+      return this.send(`🚫 Siz bot qoidalarini buzganingiz (nojo'ya mazmundagi test) uchun bloklandingiz.\nE'tirozingiz bo'lsa: ${esc(authorOf(this.env))}`);
+    }
+    await this.st.delete("banned");
+    return this.send("✅ Siz blokdan chiqarildingiz. Botdan yana foydalanishingiz mumkin — /start");
+  }
+
   async handle(update, chatId) {
     this.chatId = chatId;
     await this.st.put("chatId", chatId);
@@ -407,6 +462,14 @@ export class Chat extends DurableObject {
     const cq = update.callback_query;
     const isPrivate = (m?.chat || cq?.message?.chat)?.type === "private";
     const uid = (m || cq)?.from?.id;
+    if (isPrivate && (await this.st.get("banned"))) {
+      if (cq) await tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id, text: "🚫 Siz botdan bloklangansiz", show_alert: true });
+      else if (((await this.st.get("bannedNote")) || 0) < Date.now()) {
+        await this.st.put("bannedNote", Date.now() + 3600e3);
+        await this.send(`🚫 Siz botdan bloklangansiz. E'tirozingiz bo'lsa: ${esc(authorOf(this.env))}`);
+      }
+      return;
+    }
     // Yangi foydalanuvchini ro'yxatga olamiz (reklama uchun) va faol reklamani ko'rsatamiz
     let isNew = false;
     if (isPrivate && uid && !(await this.st.get("reg"))) {
@@ -441,6 +504,31 @@ export class Chat extends DurableObject {
       if (ad.pin && r.msgs[0]) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.msgs[0], disable_notification: true });
       await store.addDeliveries(ad.id, [[uid, r.msgs]]);
     }
+  }
+
+  async adminChat() {
+    return +((await this.store().getSetting("authorId")) || 0);
+  }
+  // Shubhali test yoki shikoyat haqida muallifga xabar
+  async reportToAdmin(quiz, header, extra = "") {
+    const admin = await this.adminChat();
+    if (!admin) return;
+    const sample = (quiz.questions || []).slice(0, 3).map((q, i) => `${i + 1}. ${esc(q.q.slice(0, 120))}`).join("\n");
+    const text = `${header}\n\n🎲 <b>${esc(quiz.title)}</b>\n${quiz.description ? `<i>${esc(quiz.description)}</i>\n` : ""}` +
+      `👤 Tuzuvchi: <a href="tg://user?id=${quiz.owner}">${quiz.owner}</a>\n${extra}\n<b>Namuna savollar:</b>\n${sample || "—"}`;
+    return tg(this.env, "sendMessage", { chat_id: admin, text, parse_mode: "HTML", reply_markup: kb([
+      [btn("✅ Ruxsat berish", `mod:ok:${quiz.id}`), btn("🗑 O'chirish", `mod:del:${quiz.id}`)],
+      [btn("🚫 Bloklash va testlarini o'chirish", `mod:ban:${quiz.id}`)],
+      [btn("👁 Testni ko'rish", `open:${quiz.id}`)]]) });
+  }
+  async banUser(uid, name, reason) {
+    const store = this.store();
+    await store.ban(uid, name, reason);
+    const res = await store.deleteUserData(uid);
+    if (this.env.TESTS_CHANNEL)
+      for (const mid of res.posts) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
+    await this.env.CHAT.get(this.env.CHAT.idFromName(String(uid))).setBanned(true, uid);
+    return res;
   }
 
   settingsMenu(editId) {
@@ -539,6 +627,26 @@ export class Chat extends DurableObject {
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
+        case "ban":
+        case "unban":
+        case "bans": {
+          if (!isPrivate || !this.isAuthor(m.from)) return;
+          const store = this.store();
+          if (cmd.toLowerCase() === "bans") {
+            const list = await store.bans();
+            return this.send(list.length ? "🚫 <b>Bloklanganlar:</b>\n" + list.map((b) =>
+              `• <code>${b.uid}</code> ${esc(b.reason || "")} — ${fmtDate(b.created)}`).join("\n") + "\n\nChiqarish: /unban ID" : "Bloklangan foydalanuvchi yo'q.");
+          }
+          const target = parseInt(arg, 10);
+          if (!target) return this.send(`Foydalanish: <code>/${cmd} 123456789</code> (foydalanuvchi ID raqami)`);
+          if (cmd.toLowerCase() === "ban") {
+            const res = await this.banUser(target, "", "qo'lda");
+            return this.send(`🚫 <code>${target}</code> bloklandi. 🗑 ${res.quizzes} ta testi o'chirildi.`);
+          }
+          const was = await store.unban(target);
+          await this.env.CHAT.get(this.env.CHAT.idFromName(String(target))).setBanned(false, target);
+          return this.send(was ? `✅ <code>${target}</code> blokdan chiqarildi.` : "Bu foydalanuvchi bloklanmagan edi.");
+        }
         case "settings":
         case "sozlamalar":
           return isPrivate ? this.settingsMenu() : null;
@@ -584,7 +692,7 @@ export class Chat extends DurableObject {
 
     // Tahrirlash uchun matn kutilmoqda
     const ed = await this.st.get("edit");
-    if (ed) return this.onEditText(ed, text, m.from.id);
+    if (ed) return this.onEditText(ed, text, m.from.id, m.from);
 
     const create = await this.st.get("create");
     if (create?.step === "custom") {
@@ -723,6 +831,13 @@ export class Chat extends DurableObject {
     const quiz = await store.getQuiz(id);
     const author = this.isAuthor(from);
     if (author) await store.setSetting("authorId", String(uid));
+    const bad = author ? null : badWord(quizTexts(quiz));
+    if (bad) {
+      await store.setStatus(id, "pending");
+      await this.edit(msgId, "⏳ Testingiz tekshiruvga yuborildi. Unda bot qoidalariga to'g'ri kelmaydigan so'zlar bor bo'lishi mumkin.\n" +
+        "Muallif ko'rib chiqqach, test ochiladi. Nojo'ya (erotik, noqonuniy) mazmundagi testlar uchun bot bloklanadi.");
+      return this.reportToAdmin(quiz, "🚨 <b>Shubhali test (avtomatik filtr)</b>", `🔎 Topilgan so'z: <code>${esc(bad)}</code>\n`);
+    }
     const c = await cardContent(this.env, quiz, { owner: true, takers: 0, author });
     await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin." +
       (author ? "\n🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing."
@@ -774,15 +889,21 @@ export class Chat extends DurableObject {
 
   async showCard(quiz, uid, editId) {
     const owner = quiz.owner === uid;
+    const isAdmin = String(uid) === String(await this.store().getSetting("authorId"));
+    if (quiz.status === "pending" && !isAdmin)
+      return this.send(owner ? "⏳ Bu test hali tekshiruvda. Muallif ko'rib chiqqach ochiladi." : "❗ Test topilmadi yoki o'chirilgan.");
     const takers = owner ? await this.store().takers(quiz.id) : null;
     const author = owner && String(uid) === String(await this.store().getSetting("authorId"));
     const c = await cardContent(this.env, quiz, { owner, takers, author });
+    if (!owner && isAdmin) c.reply_markup.inline_keyboard.push(
+      [btn("🗑 Admin: o'chirish", `mod:del:${quiz.id}`), btn("🚫 Tuzuvchini bloklash", `mod:ban:${quiz.id}`)]);
+    else if (!owner) c.reply_markup.inline_keyboard.push([btn("⚠️ Shikoyat qilish", `rep:${quiz.id}`)]);
     return editId ? this.edit(editId, c.text, { reply_markup: c.reply_markup }) : this.send(c.text, { reply_markup: c.reply_markup });
   }
 
   async openQuiz(id, from, chatType) {
     const quiz = await this.store().getQuiz(id);
-    if (!quiz) return this.send("❗ Test topilmadi yoki o'chirilgan.");
+    if (!quiz || (quiz.status === "pending" && chatType !== "private")) return this.send("❗ Test topilmadi yoki o'chirilgan.");
     if (chatType === "private") return this.showCard(quiz, from.id);
     if (!(await this.isMember(from.id))) {
       return this.send(`📢 Testni boshlash uchun avval kanallarimizga a'zo bo'ling.`, { reply_markup: kb(joinRows(this.env)) });
@@ -802,11 +923,13 @@ export class Chat extends DurableObject {
     return this.edit(msgId, text, { reply_markup });
   }
 
-  async onEditText(ed, text, uid) {
+  async onEditText(ed, text, uid, from = { id: uid }) {
     await this.st.delete("edit");
     const field = ed.field === "title" ? "title" : "description";
     const value = text.trim() === "/skip" || text.trim() === "-" ? "" : text.trim().slice(0, field === "title" ? 100 : 300);
     if (field === "title" && !value) return this.send("Nom bo'sh bo'lishi mumkin emas.");
+    if (!this.isAuthor(from) && badWord([value]))
+      return this.send("❗ Bu matnda bot qoidalariga to'g'ri kelmaydigan so'z bor. Boshqacha yozing.");
     const store = this.store();
     await store.updateQuiz(ed.id, uid, field, value);
     await this.send("✅ Saqlandi.");
@@ -876,6 +999,45 @@ export class Chat extends DurableObject {
         await answer("O'chirilmoqda…");
         return this.adMenu(msgId);
       }
+    }
+
+    if (kind === "rep") {
+      const quiz = await store.getQuiz(val);
+      if (!quiz) return answer("Test topilmadi", true);
+      if (await this.st.get("rep:" + quiz.id)) return answer("Siz bu test haqida allaqachon xabar bergansiz", true);
+      await this.st.put("rep:" + quiz.id, 1);
+      const who = [cq.from.first_name, cq.from.last_name].filter(Boolean).join(" ");
+      await this.reportToAdmin(quiz, "⚠️ <b>Foydalanuvchi shikoyati</b>",
+        `📣 Shikoyatchi: <a href="tg://user?id=${uid}">${esc(who || uid)}</a>\n`);
+      return answer("✅ Rahmat! Shikoyatingiz muallifga yuborildi.", true);
+    }
+
+    if (kind === "mod") {
+      if (String(uid) !== String(await store.getSetting("authorId"))) return answer();
+      const [act, qid] = val.split(":");
+      const quiz = await store.getQuiz(qid);
+      if (!quiz) { await answer("Test allaqachon o'chirilgan"); return; }
+      if (act === "ok") {
+        await store.setStatus(quiz.id, "ok");
+        await answer("✅ Ruxsat berildi");
+        await tg(this.env, "sendMessage", { chat_id: quiz.owner, text: `✅ «${esc(quiz.title)}» testingiz tekshiruvdan o'tdi. Endi uni ishlatishingiz mumkin: /mytests`, parse_mode: "HTML" });
+        if (quiz.status === "pending") await this.postToChannel(quiz, { id: quiz.owner, first_name: "obunachi" });
+        return this.edit(msgId, `✅ «${esc(quiz.title)}» — ruxsat berildi.`);
+      }
+      if (act === "del") {
+        const post = await store.adminDeleteQuiz(quiz.id);
+        if (post && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: post });
+        await tg(this.env, "sendMessage", { chat_id: quiz.owner, text: `🗑 «${esc(quiz.title)}» testingiz bot qoidalariga zid bo'lgani uchun o'chirildi.`, parse_mode: "HTML" });
+        await answer("🗑 O'chirildi");
+        return this.edit(msgId, `🗑 «${esc(quiz.title)}» — o'chirildi.`);
+      }
+      if (act === "ban") {
+        if (String(quiz.owner) === String(uid)) return answer("O'zingizni bloklay olmaysiz", true);
+        const res = await this.banUser(quiz.owner, "", `«${quiz.title}»`);
+        await answer("🚫 Bloklandi");
+        return this.edit(msgId, `🚫 Foydalanuvchi <code>${quiz.owner}</code> bloklandi.\n🗑 Uning ${res.quizzes} ta testi o'chirildi.\nBlokdan chiqarish: <code>/unban ${quiz.owner}</code>`);
+      }
+      return answer();
     }
 
     if (kind === "deldata") {
@@ -1030,6 +1192,7 @@ export class Chat extends DurableObject {
     if (kind === "run") {
       const quiz = await store.getQuiz(val);
       if (!quiz) return answer("Test o'chirilgan", true);
+      if (quiz.status === "pending" && String(uid) !== String(await store.getSetting("authorId"))) return answer("⏳ Test tekshiruvda", true);
       const type = cq.message.chat.type;
       if (type !== "private" && !(await this.isMember(uid))) return answer(`Avval kanallarga a'zo bo'ling: ${channelsOf(this.env).map((c) => c.name).join(", ")}`, true);
       await answer();
