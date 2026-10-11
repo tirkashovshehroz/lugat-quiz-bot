@@ -16,7 +16,8 @@ const BTN_MY = "📚 Testlarim";
 const BTN_AUTHOR = "👨‍🏫 Muallif";
 const BTN_GUIDE = "📖 Yo'riqnoma";
 const BTN_AD = "📣 Reklama berish";
-const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }], [{ text: BTN_AD }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
+const BTN_CAT = "🗂 Muallif testlari";
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }], [{ text: BTN_AD }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 // Buyruqlar menyusi: hamma uchun va faqat muallif uchun
@@ -24,6 +25,7 @@ const USER_COMMANDS = [
   { command: "start", description: "Boshlash" },
   { command: "newquiz", description: "Yangi test yaratish" },
   { command: "mytests", description: "Mening testlarim" },
+  { command: "tests", description: "🗂 Muallif testlari" },
   { command: "guide", description: "Yo'riqnoma (PDF)" },
   { command: "reklama", description: "📣 Botga reklama berish" },
   { command: "author", description: "Muallif bilan bog'lanish" },
@@ -34,6 +36,7 @@ const ADMIN_COMMANDS = [
   { command: "start", description: "Boshlash" },
   { command: "newquiz", description: "Yangi test yaratish" },
   { command: "mytests", description: "Mening testlarim" },
+  { command: "tests", description: "🗂 Muallif testlari" },
   { command: "reklama", description: "📣 Reklama boshqaruvi" },
   { command: "stat", description: "📊 Bot statistikasi" },
   { command: "setguide", description: "📖 Yo'riqnomani yangilash" },
@@ -49,7 +52,7 @@ const HELP =
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
-  "/newquiz — yangi test\n/mytests — mening testlarim\n/guide — yo'riqnoma\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
+  "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
 async function tg(env, method, body) {
@@ -88,6 +91,15 @@ function fmtTime(sec) {
   return `${Math.floor(sec / 60)} daq ${sec % 60} son`;
 }
 const channelUrl = (ch) => (ch.startsWith("@") ? `https://t.me/${ch.slice(1)}` : ch);
+// Majburiy kanallar: asosiy kanal + testlar kanali
+function channelsOf(env) {
+  const out = [];
+  if (env.CHANNEL) out.push({ id: env.CHANNEL, link: env.CHANNEL_LINK || channelUrl(env.CHANNEL), name: env.CHANNEL_NAME || env.CHANNEL });
+  if (env.TESTS_CHANNEL) out.push({ id: env.TESTS_CHANNEL, link: env.TESTS_CHANNEL_LINK || channelUrl(env.TESTS_CHANNEL),
+    name: env.TESTS_CHANNEL_NAME || (env.TESTS_CHANNEL.startsWith("@") ? env.TESTS_CHANNEL : "Testlar kanali") });
+  return out;
+}
+const joinRows = (env) => channelsOf(env).map((c, i) => [{ text: `📢 ${i + 1}-kanalga o'tish`, url: c.link }]);
 
 function newId() {
   const abc = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -141,7 +153,7 @@ export class Store extends DurableObject {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS quizzes(id TEXT PRIMARY KEY, owner INTEGER, title TEXT,
       pairs TEXT, count INTEGER, direction TEXT, timer INTEGER, created INTEGER)`);
-    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT"]) {
+    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER"]) {
       try { this.sql.exec(`ALTER TABLE quizzes ADD COLUMN ${col}`); } catch {}
     }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
@@ -180,6 +192,15 @@ export class Store extends DurableObject {
   }
   listQuizzes(owner) {
     return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT 30", owner).toArray();
+  }
+  catalog(owner, offset, n) {
+    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
+  }
+  countByOwner(owner) {
+    return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=?", owner).toArray()[0].n;
+  }
+  setChanMsg(id, msg) {
+    this.sql.exec("UPDATE quizzes SET chanMsg=? WHERE id=?", msg, id);
   }
   searchQuizzes(owner, q) {
     return this.sql.exec(
@@ -319,22 +340,26 @@ export class Chat extends DurableObject {
 
   // ---------- Kanalga a'zolik ----------
   async isMember(uid) {
-    const ch = this.env.CHANNEL;
-    if (!ch) return true;
+    const chans = channelsOf(this.env);
+    if (!chans.length) return true;
     const until = await this.st.get("m:" + uid);
     if (until && until > Date.now()) return true;
-    const r = await tg(this.env, "getChatMember", { chat_id: ch, user_id: uid });
-    if (!r.ok) return true; // bot kanalda admin bo'lmasa — hammani o'tkazamiz (loglarda xato ko'rinadi)
-    const s = r.result.status;
-    const ok = ["creator", "administrator", "member"].includes(s) || (s === "restricted" && r.result.is_member);
-    if (ok) await this.st.put("m:" + uid, Date.now() + 3600e3);
-    return ok;
+    for (const ch of chans) {
+      const r = await tg(this.env, "getChatMember", { chat_id: ch.id, user_id: uid });
+      if (!r.ok) continue; // bot kanalda admin bo'lmasa — bu kanal tekshirilmaydi (loglarda xato ko'rinadi)
+      const s = r.result.status;
+      const ok = ["creator", "administrator", "member"].includes(s) || (s === "restricted" && r.result.is_member);
+      if (!ok) return false;
+    }
+    await this.st.put("m:" + uid, Date.now() + 3600e3);
+    return true;
   }
   joinPrompt() {
-    const ch = this.env.CHANNEL;
+    const chans = channelsOf(this.env);
+    const list = chans.map((c, i) => `${i + 1}. ${esc(c.name)}`).join("\n");
     return this.send(
-      `📢 Botdan foydalanish uchun avval kanalimizga a'zo bo'ling:\n👉 ${esc(ch)}\n\nA'zo bo'lgach, «✅ Tekshirish» tugmasini bosing.\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`,
-      { reply_markup: kb([[{ text: "📢 Kanalga o'tish", url: channelUrl(ch) }], [btn("✅ Tekshirish", "chk")]]) });
+      `📢 Botdan foydalanish uchun avval ${chans.length > 1 ? "quyidagi kanallarimizga" : "kanalimizga"} a'zo bo'ling:\n${list}\n\nA'zo bo'lgach, «✅ Tekshirish» tugmasini bosing.\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`,
+      { reply_markup: kb([...joinRows(this.env), [btn("✅ Tekshirish", "chk")]]) });
   }
 
   sendHelp() {
@@ -370,9 +395,10 @@ export class Chat extends DurableObject {
       await this.st.put("reg", 1);
     }
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
-    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds"))) {
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds2"))) {
       await tg(this.env, "setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
-      await this.st.put("adminCmds", 1);
+      await this.store().setSetting("authorId", String(uid));
+      await this.st.put("adminCmds2", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
@@ -485,6 +511,9 @@ export class Chat extends DurableObject {
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
+        case "tests":
+        case "catalog":
+          return isPrivate ? this.catalog(0) : null;
         case "mytests":
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
@@ -515,6 +544,7 @@ export class Chat extends DurableObject {
       return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
     }
     if (text === BTN_MY) return this.myTests(m.from.id);
+    if (text === BTN_CAT) return this.catalog(0);
     if (text === BTN_AUTHOR) return this.sendAuthor();
     if (text === BTN_GUIDE) return this.sendGuide();
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
@@ -644,7 +674,7 @@ export class Chat extends DurableObject {
     if (create?.step === "desc") { create.description = ""; return this.askTimer(create); }
   }
 
-  async finishCreate(create, uid, msgId) {
+  async finishCreate(create, uid, msgId, from = { id: uid }) {
     let questions, pairs = create.pairs, direction = create.direction || "fwd";
     if (create.mcq) {
       // Tayyor savollar: kerakli sonini tanlab, asl tartibini saqlaymiz
@@ -660,8 +690,43 @@ export class Chat extends DurableObject {
     await this.st.delete("create");
     const quiz = await store.getQuiz(id);
     const c = await cardContent(this.env, quiz, { owner: true, takers: 0 });
-    await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin.");
+    await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin." +
+      (this.env.TESTS_CHANNEL ? "\n📢 Test kanalimizga ham joylandi." : ""));
+    await this.postToChannel(quiz, from);
     return this.send(c.text, { reply_markup: c.reply_markup });
+  }
+
+  async catalog(page = 0, editId) {
+    const store = this.store();
+    const aid = +((await store.getSetting("authorId")) || 0);
+    const total = aid ? await store.countByOwner(aid) : 0;
+    if (!total) return this.send("🗂 Muallif testlari hali joylanmagan. Tez orada qo'shiladi!");
+    const per = 10, pages = Math.ceil(total / per);
+    page = Math.min(Math.max(0, page), pages - 1);
+    const rows = (await store.catalog(aid, page * per, per)).map((r) => [btn(`🎲 ${r.title} · ${r.count} savol`, `open:${r.id}`)]);
+    const nav = [];
+    if (page > 0) nav.push(btn("⬅️ Oldingi", `cat:${page - 1}`));
+    if (page < pages - 1) nav.push(btn("Keyingi ➡️", `cat:${page + 1}`));
+    rows.push(nav);
+    const text = `🗂 <b>Muallif testlari</b> (${total} ta)${pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : ""}\n\nTestni tanlang:`;
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+
+  // Yangi testni testlar kanaliga joylash
+  async postToChannel(quiz, from) {
+    const ch = this.env.TESTS_CHANNEL;
+    if (!ch) return;
+    const me = await botName(this.env);
+    const n = quiz.questions?.length || quiz.count;
+    const byAuthor = this.isAuthor(from);
+    const who = byAuthor ? "⭐ Muallif testi" : `👤 Tuzuvchi: ${esc([from.first_name, from.last_name].filter(Boolean).join(" ") || "obunachi")}`;
+    let text = `🎲 <b>${esc(quiz.title)}</b>\n`;
+    if (quiz.description) text += `<i>${esc(quiz.description)}</i>\n`;
+    text += `\n🖊 ${n} ta savol\n⏱ Har bir savolga ${timerLabel(quiz.timer)}\n${who}`;
+    const r = await tg(this.env, "sendMessage", { chat_id: ch, text, parse_mode: "HTML",
+      reply_markup: kb([[{ text: "▶️ Testni boshlash", url: `https://t.me/${me}?start=${quiz.id}` }],
+        [{ text: "👥 Guruhda boshlash", url: `https://t.me/${me}?startgroup=${quiz.id}` }]]) });
+    if (r.ok) await this.store().setChanMsg(quiz.id, r.result.message_id);
   }
 
   async myTests(owner) {
@@ -684,8 +749,7 @@ export class Chat extends DurableObject {
     if (!quiz) return this.send("❗ Test topilmadi yoki o'chirilgan.");
     if (chatType === "private") return this.showCard(quiz, from.id);
     if (!(await this.isMember(from.id))) {
-      return this.send(`📢 Testni boshlash uchun avval kanalga a'zo bo'ling: ${esc(this.env.CHANNEL)}`,
-        { reply_markup: kb([[{ text: "📢 Kanalga o'tish", url: channelUrl(this.env.CHANNEL) }]]) });
+      return this.send(`📢 Testni boshlash uchun avval kanallarimizga a'zo bo'ling.`, { reply_markup: kb(joinRows(this.env)) });
     }
     return this.prepareSession(quiz, from.id, chatType);
   }
@@ -778,6 +842,8 @@ export class Chat extends DurableObject {
       }
     }
 
+    if (kind === "cat") { await answer(); return this.catalog(parseInt(val, 10) || 0, msgId); }
+
     if (kind === "chk") {
       if (!(await this.isMember(uid))) return answer("❗ Siz hali kanalga a'zo bo'lmadingiz.", true);
       await answer("✅ Rahmat!");
@@ -838,7 +904,7 @@ export class Chat extends DurableObject {
         if (!create.count || !create.timer) return answer("Faylni qayta yuboring", true);
         create.shuffle = SHUFFLE[val] ? val : "all";
         await answer("Test yaratildi!");
-        return this.finishCreate(create, uid, msgId);
+        return this.finishCreate(create, uid, msgId, cq.from);
       }
     }
 
@@ -887,6 +953,7 @@ export class Chat extends DurableObject {
           { reply_markup: kb([[btn("Ha, o'chirish", `delok:${id}`), btn("Yo'q", `edit:${id}`)]]) });
       }
       if (kind === "delok") {
+        if (quiz.chanMsg && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
         await store.deleteQuiz(id, uid);
         return this.edit(msgId, "🗑 Test o'chirildi.");
       }
@@ -897,7 +964,7 @@ export class Chat extends DurableObject {
       const quiz = await store.getQuiz(val);
       if (!quiz) return answer("Test o'chirilgan", true);
       const type = cq.message.chat.type;
-      if (type !== "private" && !(await this.isMember(uid))) return answer(`Avval kanalga a'zo bo'ling: ${this.env.CHANNEL}`, true);
+      if (type !== "private" && !(await this.isMember(uid))) return answer(`Avval kanallarga a'zo bo'ling: ${channelsOf(this.env).map((c) => c.name).join(", ")}`, true);
       await answer();
       return this.prepareSession(quiz, uid, type);
     }
@@ -964,7 +1031,7 @@ export class Chat extends DurableObject {
       if (uid !== s.starter) return answer();
       return this.launch(s, answer);
     }
-    if (!(await this.isMember(uid))) return answer(`Avval kanalga a'zo bo'ling: ${this.env.CHANNEL}`, true);
+    if (!(await this.isMember(uid))) return answer(`Avval kanallarga a'zo bo'ling: ${channelsOf(this.env).map((c) => c.name).join(", ")}`, true);
     if (s.ready.includes(uid)) return answer("Siz allaqachon tayyorsiz ✅");
     s.ready.push(uid);
     if (s.ready.length >= MIN_READY) return this.launch(s, answer);
@@ -1302,12 +1369,15 @@ export default {
       });
       await tg(env, "setMyCommands", { commands: USER_COMMANDS });
       let msg = r.ok ? "✅ Bot ulandi! Endi Telegramda botingizga /start yozing." : "❌ Xato: " + r.description;
-      if (env.CHANNEL) {
-        const me = (await tg(env, "getMe", {})).result;
-        const cm = await tg(env, "getChatMember", { chat_id: env.CHANNEL, user_id: me?.id });
-        msg += cm.ok && cm.result.status === "administrator"
-          ? `\n✅ Kanal tekshiruvi ishlaydi: ${env.CHANNEL}`
-          : `\n⚠️ Bot ${env.CHANNEL} kanalida admin emas — a'zolik tekshirilmaydi. Botni kanalga admin qilib qo'shing.`;
+      const me = (await tg(env, "getMe", {})).result;
+      for (const ch of channelsOf(env)) {
+        const cm = await tg(env, "getChatMember", { chat_id: ch.id, user_id: me?.id });
+        const admin = cm.ok && cm.result.status === "administrator";
+        msg += admin ? `\n✅ Kanal tekshiruvi ishlaydi: ${ch.name}`
+          : `\n⚠️ Bot ${ch.name} kanalida admin emas — a'zolik tekshirilmaydi. Botni kanalga admin qilib qo'shing.`;
+        if (admin && ch.id === env.TESTS_CHANNEL)
+          msg += cm.result.can_post_messages ? "\n✅ Yangi testlar shu kanalga avtomatik joylanadi."
+            : "\n⚠️ Botga testlar kanalida «Xabar joylash» huquqini bering.";
       }
       return new Response(msg, { headers: { "content-type": "text/plain; charset=utf-8" } });
     }
