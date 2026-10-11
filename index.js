@@ -258,7 +258,7 @@ export class Chat extends DurableObject {
     const fid = await this.store().getSetting("guide");
     if (!fid) return this.send("📖 Yo'riqnoma hali yuklanmagan. Savollar bo'lsa, muallifga yozing: /author");
     return tg(this.env, "sendDocument", { chat_id: this.chatId, document: fid,
-      caption: "📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>\n\nSavollar bo'lsa: " + esc(authorOf(this.env)), parse_mode: "HTML" });
+      caption: "📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>\n\nSavollar bo'lsa " + esc(authorOf(this.env)) + " ga yozing.", parse_mode: "HTML" });
   }
   sendAuthor() {
     const a = authorOf(this.env);

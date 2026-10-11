@@ -53,6 +53,9 @@ function splitInlineOptions(line) {
 function resolveAnswer(q, raw) {
   raw = (raw || "").trim();
   if (!raw) return -1;
+  // Javob matni variantlardan biriga aynan mos kelsa — o'sha (masalan "D. I. Mendeleyev")
+  const exact = q.opts.findIndex((o) => norm(o) && norm(o) === norm(raw));
+  if (exact >= 0) return exact;
   const m = raw.match(/^([A-Ja-jА-Ка-к])(?:\s*[).:]|\s*$|\s+)/);
   if (m) {
     const i = letterIndex(m[1]);
