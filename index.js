@@ -153,7 +153,7 @@ export class Store extends DurableObject {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS quizzes(id TEXT PRIMARY KEY, owner INTEGER, title TEXT,
       pairs TEXT, count INTEGER, direction TEXT, timer INTEGER, created INTEGER)`);
-    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER"]) {
+    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER", "public INTEGER DEFAULT 0"]) {
       try { this.sql.exec(`ALTER TABLE quizzes ADD COLUMN ${col}`); } catch {}
     }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
@@ -194,10 +194,13 @@ export class Store extends DurableObject {
     return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT 30", owner).toArray();
   }
   catalog(owner, offset, n) {
-    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
+    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? AND public=1 ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
   }
   countByOwner(owner) {
-    return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=?", owner).toArray()[0].n;
+    return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=? AND public=1", owner).toArray()[0].n;
+  }
+  setPublic(id, v) {
+    this.sql.exec("UPDATE quizzes SET public=? WHERE id=?", v ? 1 : 0, id);
   }
   setChanMsg(id, msg) {
     this.sql.exec("UPDATE quizzes SET chanMsg=? WHERE id=?", msg, id);
@@ -303,13 +306,14 @@ export class Store extends DurableObject {
 }
 
 // Test kartasi (QuizBot uslubida)
-async function cardContent(env, quiz, { owner = false, takers = null } = {}) {
+async function cardContent(env, quiz, { owner = false, takers = null, author = false } = {}) {
   const me = await botName(env);
   const n = quiz.questions?.length || quiz.count;
   let text = `🎲 <b>${esc(quiz.title)}</b>\n`;
   if (quiz.description) text += `<i>${esc(quiz.description)}</i>\n`;
   text += `\n🖊 ${n} ta savol\n⏱ Har bir savolga ${timerLabel(quiz.timer)}\n🔀 ${SHUFFLE[quiz.shuffle || "all"]}`;
   if (takers != null) text += `\n👥 ${takers} kishi yechgan`;
+  if (author) text += quiz.public ? "\n🌐 Hammaga ko'rinadi («Muallif testlari» va kanalda)" : "\n🔒 Faqat sizga ko'rinadi";
   text += `\n\n🔗 https://t.me/${me}?start=${quiz.id}`;
   const rows = [
     [btn("▶️ Testni boshlash", `run:${quiz.id}`)],
@@ -317,6 +321,7 @@ async function cardContent(env, quiz, { owner = false, takers = null } = {}) {
     [{ text: "🔗 Testni ulashish", switch_inline_query: quiz.id }],
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
+  if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
 }
 
@@ -689,10 +694,13 @@ export class Chat extends DurableObject {
       pairs, direction, timer: create.timer, shuffle: create.shuffle, questions });
     await this.st.delete("create");
     const quiz = await store.getQuiz(id);
-    const c = await cardContent(this.env, quiz, { owner: true, takers: 0 });
+    const author = this.isAuthor(from);
+    if (author) await store.setSetting("authorId", String(uid));
+    const c = await cardContent(this.env, quiz, { owner: true, takers: 0, author });
     await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin." +
-      (this.env.TESTS_CHANNEL ? "\n📢 Test kanalimizga ham joylandi." : ""));
-    await this.postToChannel(quiz, from);
+      (author ? "\n🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing."
+        : this.env.TESTS_CHANNEL ? "\n📢 Test kanalimizga ham joylandi." : ""));
+    if (!author) await this.postToChannel(quiz, from);
     return this.send(c.text, { reply_markup: c.reply_markup });
   }
 
@@ -740,7 +748,8 @@ export class Chat extends DurableObject {
   async showCard(quiz, uid, editId) {
     const owner = quiz.owner === uid;
     const takers = owner ? await this.store().takers(quiz.id) : null;
-    const c = await cardContent(this.env, quiz, { owner, takers });
+    const author = owner && String(uid) === String(await this.store().getSetting("authorId"));
+    const c = await cardContent(this.env, quiz, { owner, takers, author });
     return editId ? this.edit(editId, c.text, { reply_markup: c.reply_markup }) : this.send(c.text, { reply_markup: c.reply_markup });
   }
 
@@ -840,6 +849,22 @@ export class Chat extends DurableObject {
         await answer("O'chirilmoqda…");
         return this.adMenu(msgId);
       }
+    }
+
+    if (kind === "pub") {
+      const quiz = await store.getQuiz(val);
+      if (!quiz || quiz.owner !== uid || !this.isAuthor(cq.from)) return answer("Faqat muallif uchun", true);
+      const on = !quiz.public;
+      await store.setPublic(quiz.id, on);
+      if (on) {
+        await this.postToChannel(quiz, cq.from);
+        await answer("🌐 Endi hammaga ko'rinadi va kanalga joylandi");
+      } else {
+        if (quiz.chanMsg && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+        await store.setChanMsg(quiz.id, null);
+        await answer("🔒 Obunachilardan yashirildi");
+      }
+      return this.showCard(await store.getQuiz(quiz.id), uid, msgId);
     }
 
     if (kind === "cat") { await answer(); return this.catalog(parseInt(val, 10) || 0, msgId); }

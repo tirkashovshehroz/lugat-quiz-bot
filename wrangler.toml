@@ -3,9 +3,11 @@ main = "index.js"
 compatibility_date = "2025-04-01"
 
 [vars]
-# Majburiy a'zolik kanali
+# 1-majburiy kanal
 CHANNEL = "@Turk_tili_Milliy_va_TYS"
-# Bot muallifi (doim ko'rinadi, reklama va yo'riqnomani boshqaradi)
+# 2-majburiy kanal: yangi testlar shu yerga avtomatik joylanadi
+TESTS_CHANNEL = "@MyLingoUP_BOT_testlari"
+# Bot muallifi (reklama, yo'riqnoma va muallif testlarini boshqaradi)
 AUTHOR = "@Shehroz_hoca"
 
 [[durable_objects.bindings]]
