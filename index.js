@@ -13,8 +13,7 @@ const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: 
 const HELP =
   "📚 <b>LingoUP bot</b>\n\n" +
   "Fayl yuboring — bot undan tayyor test tuzib beradi.\n\n" +
-  "1️⃣ Faylni yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
-  "   (yoki matnni shunchaki xabar qilib yozing)\n" +
+  "1️⃣ Faylni yuboring (PDF, Word, Excel, .txt)\n" +
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
