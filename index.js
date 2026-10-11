@@ -18,6 +18,29 @@ const BTN_GUIDE = "📖 Yo'riqnoma";
 const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
+// Buyruqlar menyusi: hamma uchun va faqat muallif uchun
+const USER_COMMANDS = [
+  { command: "start", description: "Boshlash" },
+  { command: "newquiz", description: "Yangi test yaratish" },
+  { command: "mytests", description: "Mening testlarim" },
+  { command: "guide", description: "Yo'riqnoma (PDF)" },
+  { command: "reklama", description: "Reklama joylash" },
+  { command: "author", description: "Muallif bilan bog'lanish" },
+  { command: "stop", description: "Testni to'xtatish" },
+  { command: "cancel", description: "Bekor qilish" },
+];
+const ADMIN_COMMANDS = [
+  { command: "start", description: "Boshlash" },
+  { command: "newquiz", description: "Yangi test yaratish" },
+  { command: "mytests", description: "Mening testlarim" },
+  { command: "reklama", description: "📣 Reklama boshqaruvi" },
+  { command: "stat", description: "📊 Bot statistikasi" },
+  { command: "setguide", description: "📖 Yo'riqnomani yangilash" },
+  { command: "guide", description: "Yo'riqnoma (PDF)" },
+  { command: "stop", description: "Testni to'xtatish" },
+  { command: "cancel", description: "Bekor qilish" },
+];
+
 const HELP =
   "📚 <b>LingoUP bot</b>\n\n" +
   "Fayl yuboring — bot undan tayyor test tuzib beradi.\n\n" +
@@ -123,6 +146,9 @@ export class Store extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS users(uid INTEGER PRIMARY KEY, created INTEGER, blocked INTEGER DEFAULT 0)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ads(id INTEGER PRIMARY KEY AUTOINCREMENT, fromChat INTEGER, msgIds TEXT, pin INTEGER,
+      title TEXT, created INTEGER, expires INTEGER, active INTEGER DEFAULT 1, sent INTEGER DEFAULT 0, fail INTEGER DEFAULT 0)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS deliveries(ad INTEGER, uid INTEGER, msgs TEXT, PRIMARY KEY(ad, uid))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS results(qid TEXT, uid INTEGER, name TEXT, ok INTEGER, total INTEGER,
       secs REAL, created INTEGER, PRIMARY KEY(qid, uid))`);
     // Avvaldan bor foydalanuvchilarni (test yaratgan va yechganlar) ro'yxatga qo'shamiz
@@ -203,6 +229,41 @@ export class Store extends DurableObject {
     const q = (s) => this.sql.exec(s).toArray()[0].n;
     return { users: q("SELECT COUNT(*) AS n FROM users WHERE blocked=0"), blocked: q("SELECT COUNT(*) AS n FROM users WHERE blocked=1"),
       quizzes: q("SELECT COUNT(*) AS n FROM quizzes"), results: q("SELECT COUNT(*) AS n FROM results") };
+  }
+  // ---- Reklamalar ----
+  addAd(a) {
+    this.sql.exec("INSERT INTO ads(fromChat,msgIds,pin,title,created,expires) VALUES(?,?,?,?,?,?)",
+      a.fromChat, JSON.stringify(a.msgIds), a.pin ? 1 : 0, a.title, Date.now(), a.expires || null);
+    return this.sql.exec("SELECT last_insert_rowid() AS id").toArray()[0].id;
+  }
+  getAd(id) {
+    const r = this.sql.exec("SELECT * FROM ads WHERE id=?", id).toArray()[0];
+    return r ? { ...r, msgIds: JSON.parse(r.msgIds) } : null;
+  }
+  activeAds() {
+    return this.sql.exec("SELECT * FROM ads WHERE active=1 ORDER BY id").toArray().map((r) => ({ ...r, msgIds: JSON.parse(r.msgIds) }));
+  }
+  deactivateAd(id) {
+    this.sql.exec("UPDATE ads SET active=0 WHERE id=?", id);
+  }
+  expiredAds(now) {
+    return this.sql.exec("SELECT id FROM ads WHERE active=1 AND expires IS NOT NULL AND expires<=?", now).toArray().map((r) => r.id);
+  }
+  nextExpiry() {
+    return this.sql.exec("SELECT MIN(expires) AS t FROM ads WHERE active=1 AND expires IS NOT NULL").toArray()[0].t;
+  }
+  adStats(id, sent, fail) {
+    this.sql.exec("UPDATE ads SET sent=?, fail=? WHERE id=?", sent, fail, id);
+  }
+  addDeliveries(ad, rows) {
+    for (const [uid, msgs] of rows) this.sql.exec("INSERT OR REPLACE INTO deliveries VALUES(?,?,?)", ad, uid, JSON.stringify(msgs));
+  }
+  listDeliveries(ad, after, n) {
+    return this.sql.exec("SELECT uid, msgs FROM deliveries WHERE ad=? AND uid>? ORDER BY uid LIMIT ?", ad, after, n).toArray()
+      .map((r) => ({ uid: r.uid, msgs: JSON.parse(r.msgs) }));
+  }
+  clearDeliveries(ad) {
+    this.sql.exec("DELETE FROM deliveries WHERE ad=?", ad);
   }
   getSetting(k) {
     return this.sql.exec("SELECT v FROM settings WHERE k=?", k).toArray()[0]?.v ?? null;
@@ -307,36 +368,49 @@ export class Chat extends DurableObject {
       isNew = await this.store().addUser(uid);
       await this.st.put("reg", 1);
     }
+    // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds"))) {
+      await tg(this.env, "setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
+      await this.st.put("adminCmds", 1);
+    }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
       if (arg) await this.st.put("pendingStart", arg);
       if (cq) await tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id });
       await this.joinPrompt();
-      if (isNew) await this.sendActiveAd();
+      if (isNew) await this.sendActiveAds(uid);
       return;
     }
     if (m) await this.onMessage(m);
     else if (cq) await this.onCallback(cq);
-    if (isNew) await this.sendActiveAd();
+    if (isNew) await this.sendActiveAds(uid);
   }
 
-  async sendActiveAd() {
-    const raw = await this.store().getSetting("ad");
-    const ad = raw ? JSON.parse(raw) : null;
-    if (!ad) return;
-    const r = await copyAd(this.env, this.chatId, ad);
-    if (r.ok && ad.pin && r.first) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.first, disable_notification: true });
+  // Yangi foydalanuvchiga barcha faol reklamalarni yuborish
+  async sendActiveAds(uid) {
+    const store = this.store();
+    for (const ad of await store.activeAds()) {
+      const r = await copyAd(this.env, this.chatId, ad);
+      if (!r.ok) continue;
+      if (ad.pin && r.msgs[0]) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.msgs[0], disable_notification: true });
+      await store.addDeliveries(ad.id, [[uid, r.msgs]]);
+    }
   }
 
   // ---------- Reklama (faqat muallif) ----------
-  async adMenu() {
-    const s = await this.store().userStats();
-    const raw = await this.store().getSetting("ad");
-    const ad = raw ? JSON.parse(raw) : null;
-    return this.send(`📣 <b>Reklama tarqatish</b>\n\n👥 Faol foydalanuvchilar: <b>${s.users}</b>\n🚫 Botni bloklaganlar: ${s.blocked}\n` +
-      (ad ? `\n📌 Hozir faol reklama bor${ad.pin ? " (qadalgan)" : ""} — yangi foydalanuvchilar ham uni oladi.\n` : "") +
-      "\nReklama postini yuboring: matn, rasm, video, fayl — istalgan ko'rinishda (tugmali post ham bo'ladi, uni boshqa kanaldan forward qiling).\nBekor qilish: /cancel",
-      { reply_markup: kb([ad ? [btn("🗑 Faol reklamani olib tashlash", "ad:unpin")] : []]) });
+  async adMenu(editId) {
+    const store = this.store();
+    const s = await store.userStats();
+    const ads = await store.activeAds();
+    const status = await this.env.CASTER.get(this.env.CASTER.idFromName("main")).status();
+    let text = `📣 <b>Reklama boshqaruvi</b>\n\n👥 Faol foydalanuvchilar: <b>${s.users}</b>\n🚫 Botni bloklaganlar: ${s.blocked}\n`;
+    if (status.queue) text += `\n⏳ Navbatda: ${status.queue} ta vazifa${status.progress != null ? ` (hozirgisi: ${status.progress} ta yuborildi)` : ""}\n`;
+    text += ads.length ? `\n<b>Faol reklamalar (${ads.length}):</b>\n` + ads.map((a) =>
+      `${a.pin ? "📌" : "📤"} #${a.id} ${esc(a.title)} — ${a.sent} ta${a.expires ? `, ⏳ ${fmtDate(a.expires)} gacha` : ", muddatsiz"}`).join("\n") +
+      "\n\nYangi foydalanuvchilar barcha faol reklamalarni avtomatik oladi." : "\nHozir faol reklama yo'q.";
+    const rows = [[btn("➕ Yangi reklama", "ad:new")], ...ads.map((a) => [btn(`🗑 #${a.id} ${a.title}`.slice(0, 60), `adrm:${a.id}`)]),
+      [btn("🔄 Yangilash", "ad:menu")]];
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
   }
 
   // ---------- Xabarlar ----------
@@ -356,11 +430,13 @@ export class Chat extends DurableObject {
     // Muallif reklama postini yuboryapti
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitAd")) && this.isAuthor(m.from)) {
       await this.st.delete("awaitAd");
-      await this.st.put("adDraft", { fromChat: m.chat.id, msgIds: [m.message_id], group: m.media_group_id || null });
+      const kind = m.photo ? "🖼 Rasm" : m.video ? "🎬 Video" : m.animation ? "🎞 GIF" : m.document ? "📄 Fayl" : m.voice ? "🎤 Ovoz" : "📝 Post";
+      const title = ((m.caption || m.text || "").split("\n")[0].trim() || kind).slice(0, 40);
+      await this.st.put("adDraft", { fromChat: m.chat.id, msgIds: [m.message_id], group: m.media_group_id || null, title });
       const s = await this.store().userStats();
       return this.send(`👆 Reklama posti tayyor${m.media_group_id ? " (albom — barcha rasm/videolar birga boradi, birinchisi qadaladi)" : ""}. <b>${s.users}</b> ta foydalanuvchiga yuboriladi.\n\nQanday tarqatamiz?`, {
         reply_to_message_id: m.message_id,
-        reply_markup: kb([[btn("📤 Post qilib yuborish", "ad:send")], [btn("📌 Yuborish va tepaga qadash", "ad:pin")], [btn("❌ Bekor qilish", "ad:cancel")]]) });
+        reply_markup: kb([[btn("📤 Post qilib yuborish", "admode:send")], [btn("📌 Yuborish va tepaga qadash", "admode:pin")], [btn("❌ Bekor qilish", "ad:cancel")]]) });
     }
     if (text.startsWith("/")) {
       const [head, ...rest] = text.trim().split(/\s+/);
@@ -376,8 +452,12 @@ export class Chat extends DurableObject {
           return this.sendAuthor();
         case "reklama":
         case "ad":
-          if (!isPrivate || !this.isAuthor(m.from)) return;
-          await this.st.put("awaitAd", true);
+          if (!isPrivate) return;
+          if (!this.isAuthor(m.from)) {
+            const a = authorOf(this.env);
+            return this.send(`📣 Botga reklama joylamoqchi bo'lsangiz ${esc(a)} ga murojaat qiling.`,
+              { reply_markup: kb([[{ text: "✉️ Murojaat qilish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
+          }
           return this.adMenu();
         case "stat":
         case "stats": {
@@ -641,29 +721,57 @@ export class Chat extends DurableObject {
     const [kind, val] = i < 0 ? [data, ""] : [data.slice(0, i), data.slice(i + 1)];
     const store = this.store();
 
-    if (kind === "ad") {
+    if (kind === "ad" || kind === "admode" || kind === "adgo" || kind === "adrm" || kind === "adrmok") {
       if (!this.isAuthor(cq.from)) return answer();
       const caster = this.env.CASTER.get(this.env.CASTER.idFromName("main"));
-      if (val === "cancel") {
+      if (kind === "ad" && val === "menu") { await answer(); return this.adMenu(msgId); }
+      if (kind === "ad" && val === "new") {
+        await this.st.put("awaitAd", true);
+        await answer();
+        return this.send("📝 Reklama postini yuboring: matn, rasm, video, GIF, albom yoki fayl.\nTugmali post kerak bo'lsa — kanaldan forward qiling.\nBekor qilish: /cancel");
+      }
+      if (kind === "ad" && val === "cancel") {
         await this.st.delete("adDraft");
         await answer("Bekor qilindi");
         return this.edit(msgId, "❌ Reklama bekor qilindi.");
       }
-      let job;
-      if (val === "unpin") job = { mode: "unpin" };
-      else {
+      if (kind === "admode") {
+        const d = await this.st.get("adDraft");
+        if (!d) return answer("Postni qayta yuboring: /reklama", true);
+        await answer();
+        const days = [1, 3, 7, 30];
+        return this.edit(msgId, `${val === "pin" ? "📌 Qadab" : "📤 Post qilib"} yuboriladi.\n\n⏳ Reklama qancha vaqt tursin? Muddat tugagach u barcha chatlardan o'zi olib tashlanadi.`,
+          { reply_markup: kb([days.map((d) => btn(`${d} kun`, `adgo:${val}:${d}`)), [btn("♾ Muddatsiz", `adgo:${val}:0`)], [btn("❌ Bekor qilish", "ad:cancel")]]) });
+      }
+      if (kind === "adgo") {
+        const [mode, daysStr] = val.split(":");
         const d = await this.st.get("adDraft");
         if (!d) return answer("Postni qayta yuboring: /reklama", true);
         await this.st.delete("adDraft");
-        job = { mode: val === "pin" ? "pin" : "send", fromChat: d.fromChat, msgIds: d.msgIds };
+        const days = parseInt(daysStr, 10) || 0;
+        const id = await store.addAd({ fromChat: d.fromChat, msgIds: d.msgIds, pin: mode === "pin", title: d.title,
+          expires: days ? Date.now() + days * 86400e3 : null });
+        const pos = await caster.enqueue({ type: "send", ad: id, admin: this.chatId });
+        await answer("Navbatga qo'shildi!");
+        return this.edit(msgId, `✅ Reklama #${id} «${esc(d.title)}» ${pos > 1 ? `navbatga qo'shildi (${pos}-o'rinda)` : "tarqatilmoqda"}.` +
+          `\n${mode === "pin" ? "📌 Qadaladi." : "📤 Post qilib yuboriladi."} ⏳ ${days ? `${days} kun (${fmtDate(Date.now() + days * 86400e3)} gacha)` : "Muddatsiz"}` +
+          "\nTugagach xabar beraman. Boshqaruv: /reklama");
       }
-      job.admin = this.chatId;
-      job.statusMsg = msgId;
-      const okStart = await caster.start(job);
-      if (!okStart) return answer("⏳ Oldingi tarqatish hali tugamagan", true);
-      await answer("Boshlandi!");
-      return this.edit(msgId, job.mode === "unpin" ? "🗑 Qadalgan reklama barcha chatlardan olib tashlanmoqda…" :
-        `📣 Reklama tarqatilmoqda${job.mode === "pin" ? " va qadalmoqda" : ""}…\nTugagach xabar beraman.`);
+      if (kind === "adrm") {
+        const ad = await store.getAd(+val);
+        if (!ad || !ad.active) { await answer("Bu reklama allaqachon o'chirilgan"); return this.adMenu(msgId); }
+        await answer();
+        return this.edit(msgId, `🗑 #${ad.id} «${esc(ad.title)}» reklamasini barcha chatlardan olib tashlaymizmi?`,
+          { reply_markup: kb([[btn("Ha, olib tashlash", `adrmok:${ad.id}`), btn("Yo'q", "ad:menu")]]) });
+      }
+      if (kind === "adrmok") {
+        const ad = await store.getAd(+val);
+        if (!ad || !ad.active) return answer("Allaqachon o'chirilgan", true);
+        await store.deactivateAd(ad.id);
+        await caster.enqueue({ type: "remove", ad: ad.id, admin: this.chatId, reason: "siz o'chirdingiz" });
+        await answer("O'chirilmoqda…");
+        return this.adMenu(msgId);
+      }
     }
 
     if (kind === "chk") {
@@ -1042,16 +1150,22 @@ async function onInline(iq, env) {
   return tg(env, "answerInlineQuery", { inline_query_id: iq.id, results, cache_time: 0, is_personal: true });
 }
 
-// Reklamani bitta chatga nusxalash (bitta post yoki albom). Qadash uchun birinchi xabar id sini qaytaradi.
+// Reklamani bitta chatga nusxalash (bitta post yoki albom). Yuborilgan xabarlar id larini qaytaradi.
 async function copyAd(env, chatId, ad) {
   const ids = ad.msgIds || [ad.msgId];
   if (ids.length === 1) {
     const r = await tg(env, "copyMessage", { chat_id: chatId, from_chat_id: ad.fromChat, message_id: ids[0] });
-    return { ...r, first: r.result?.message_id };
+    return { ...r, msgs: r.ok ? [r.result.message_id] : [] };
   }
   const r = await tg(env, "copyMessages", { chat_id: chatId, from_chat_id: ad.fromChat, message_ids: [...ids].sort((a, b) => a - b) });
-  return { ...r, first: r.result?.[0]?.message_id };
+  return { ...r, msgs: r.ok ? r.result.map((x) => x.message_id) : [] };
 }
+
+const fmtDate = (t) => {
+  const d = new Date(t + 5 * 3600e3);
+  const z = (n) => String(n).padStart(2, "0");
+  return `${z(d.getUTCDate())}.${z(d.getUTCMonth() + 1)} ${z(d.getUTCHours())}:${z(d.getUTCMinutes())}`;
+};
 
 // ---------------- Reklama tarqatuvchi (navbat bilan, Telegram limitlariga mos) ----------------
 const BATCH = 25;
@@ -1064,56 +1178,96 @@ export class Caster extends DurableObject {
   store() {
     return this.env.STORE.get(this.env.STORE.idFromName("db"));
   }
-  async start(job) {
-    const cur = await this.st.get("job");
-    if (cur && Date.now() - cur.started < 6 * 3600e3) return false;
-    const store = this.store();
-    // Yangi foydalanuvchilar ham shu reklamani olsin
-    await store.setSetting("ad", job.mode === "unpin" ? "" : JSON.stringify({ fromChat: job.fromChat, msgIds: job.msgIds, pin: job.mode === "pin" }));
-    await this.st.put("job", { ...job, after: 0, ok: 0, fail: 0, batches: 0, started: Date.now() });
-    await this.st.setAlarm(Date.now() + 200);
-    return true;
+  notify(chat, text) {
+    return tg(this.env, "sendMessage", { chat_id: chat, text, parse_mode: "HTML" });
+  }
+  async status() {
+    const q = (await this.st.get("queue")) || [];
+    return { queue: q.length, progress: q[0] ? q[0].ok + q[0].fail : null };
+  }
+  // Vazifani navbatga qo'shish; navbatdagi o'rnini qaytaradi
+  async enqueue(job) {
+    const q = (await this.st.get("queue")) || [];
+    q.push({ ...job, after: 0, ok: 0, fail: 0, started: Date.now() });
+    await this.st.put("queue", q);
+    if (q.length === 1) await this.st.setAlarm(Date.now() + 200);
+    return q.length;
+  }
+  async scheduleExpiry() {
+    const t = await this.store().nextExpiry();
+    if (t) await this.st.setAlarm(Math.max(Date.now() + 1000, t));
   }
   async alarm() {
-    const job = await this.st.get("job");
-    if (!job) return;
     const store = this.store();
-    const users = await store.listUsers(job.after, BATCH);
-    if (!users.length) {
-      await this.st.delete("job");
-      const mins = Math.max(1, Math.round((Date.now() - job.started) / 60000));
-      const text = job.mode === "unpin"
-        ? `✅ Qadalgan reklama ${job.ok} ta chatdan olib tashlandi.`
-        : `✅ <b>Reklama tarqatildi!</b>\n\n📤 Yetib bordi: <b>${job.ok}</b>\n🚫 Yetib bormadi (botni bloklagan): ${job.fail}\n⏱ ${mins} daqiqa` +
-          (job.mode === "pin" ? "\n📌 Barcha chatlarda tepaga qadaldi." : "") +
-          "\n\nYangi foydalanuvchilar ham bu reklamani avtomatik oladi. Olib tashlash: /reklama";
-      return tg(this.env, "sendMessage", { chat_id: job.admin, text, parse_mode: "HTML" });
+    let q = (await this.st.get("queue")) || [];
+    // Muddati tugagan reklamalarni o'chirish vazifasiga qo'shamiz
+    for (const id of await store.expiredAds(Date.now())) {
+      await store.deactivateAd(id);
+      const ad = await store.getAd(id);
+      q.push({ type: "remove", ad: id, admin: ad.fromChat, reason: "muddati tugadi", after: 0, ok: 0, fail: 0, started: Date.now() });
     }
-    for (const uid of users) {
-      let r;
-      if (job.mode === "unpin") r = await tg(this.env, "unpinAllChatMessages", { chat_id: uid });
-      else {
-        r = await copyAd(this.env, uid, job);
-        if (r.ok && job.mode === "pin" && r.first)
-          await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.first, disable_notification: true });
+    const job = q[0];
+    if (!job) { await this.st.put("queue", q); return this.scheduleExpiry(); }
+    const ad = await store.getAd(job.ad);
+    const done = async (text) => {
+      q.shift();
+      await this.st.put("queue", q);
+      if (text) await this.notify(job.admin, text);
+      if (q.length) await this.st.setAlarm(Date.now() + 500);
+      else await this.scheduleExpiry();
+    };
+    if (!ad) return done();
+
+    if (job.type === "send") {
+      if (!ad.active) return done(`ℹ️ #${ad.id} «${esc(ad.title)}» o'chirilgani uchun tarqatish to'xtatildi (${job.ok} taga yetib borgan edi).`);
+      const users = await store.listUsers(job.after, BATCH);
+      if (!users.length) {
+        await store.adStats(ad.id, job.ok, job.fail);
+        const mins = Math.max(1, Math.round((Date.now() - job.started) / 60000));
+        return done(`✅ <b>Reklama #${ad.id} tarqatildi!</b>\n«${esc(ad.title)}»\n\n📤 Yetib bordi: <b>${job.ok}</b>\n🚫 Yetib bormadi (botni bloklagan): ${job.fail}\n⏱ ${mins} daqiqa` +
+          (ad.pin ? "\n📌 Barcha chatlarda tepaga qadaldi." : "") +
+          (ad.expires ? `\n⏳ ${fmtDate(ad.expires)} da avtomatik olib tashlanadi.` : "") + "\n\nBoshqaruv: /reklama");
       }
-      if (r.ok) job.ok++;
-      else if (r.error_code === 429) {
-        // Telegram "sekinroq" desa — kutib, shu foydalanuvchidan davom etamiz
-        await this.st.put("job", job);
-        return this.st.setAlarm(Date.now() + ((r.parameters?.retry_after || 5) + 1) * 1000);
-      } else {
-        job.fail++;
-        if (r.error_code === 403 || /chat not found|deactivated|blocked/i.test(r.description || "")) await store.markBlocked(uid);
+      const rows = [];
+      for (const uid of users) {
+        const r = await copyAd(this.env, uid, ad);
+        if (r.ok) {
+          if (ad.pin && r.msgs[0]) await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.msgs[0], disable_notification: true });
+          rows.push([uid, r.msgs]);
+          job.ok++;
+        } else if (r.error_code === 429) {
+          break; // Telegram "sekinroq" dedi — shu foydalanuvchidan keyinroq davom etamiz
+        } else {
+          job.fail++;
+          if (r.error_code === 403 || /chat not found|deactivated|blocked/i.test(r.description || "")) await store.markBlocked(uid);
+        }
+        job.after = uid;
+        if (job.ok % 500 === 0 && job.ok && r.ok) await store.adStats(ad.id, job.ok, job.fail);
       }
-      job.after = uid;
+      if (rows.length) await store.addDeliveries(ad.id, rows);
+      q[0] = job;
+      await this.st.put("queue", q);
+      return this.st.setAlarm(Date.now() + (rows.length < users.length && job.after !== users[users.length - 1] ? 6000 : 1100));
     }
-    job.batches++;
-    if (job.batches % 20 === 0 && job.mode !== "unpin")
-      await tg(this.env, "editMessageText", { chat_id: job.admin, message_id: job.statusMsg,
-        text: `📣 Reklama tarqatilmoqda… ${job.ok + job.fail} ta yuborildi.` });
-    await this.st.put("job", job);
-    await this.st.setAlarm(Date.now() + 1100);
+
+    if (job.type === "remove") {
+      const rows = await store.listDeliveries(ad.id, job.after, BATCH);
+      if (!rows.length) {
+        await store.clearDeliveries(ad.id);
+        return done(`🗑 Reklama #${ad.id} «${esc(ad.title)}» ${job.ok} ta chatdan olib tashlandi (${job.reason || "o'chirildi"}).`);
+      }
+      for (const { uid, msgs } of rows) {
+        if (ad.pin && msgs[0]) await tg(this.env, "unpinChatMessage", { chat_id: uid, message_id: msgs[0] });
+        const r = await tg(this.env, "deleteMessages", { chat_id: uid, message_ids: msgs });
+        if (r.error_code === 429) break;
+        job.ok++;
+        job.after = uid;
+      }
+      q[0] = job;
+      await this.st.put("queue", q);
+      return this.st.setAlarm(Date.now() + 1100);
+    }
+    return done();
   }
 }
 
@@ -1142,16 +1296,7 @@ export default {
         allowed_updates: ["message", "callback_query", "poll_answer", "inline_query"],
         drop_pending_updates: true,
       });
-      await tg(env, "setMyCommands", { commands: [
-        { command: "start", description: "Boshlash" },
-        { command: "newquiz", description: "Yangi test yaratish" },
-        { command: "mytests", description: "Mening testlarim" },
-        { command: "stop", description: "Testni to'xtatish" },
-        { command: "cancel", description: "Bekor qilish" },
-        { command: "guide", description: "Yo'riqnoma (PDF)" },
-        { command: "author", description: "Muallif bilan bog'lanish" },
-        { command: "help", description: "Yordam" },
-      ] });
+      await tg(env, "setMyCommands", { commands: USER_COMMANDS });
       let msg = r.ok ? "✅ Bot ulandi! Endi Telegramda botingizga /start yozing." : "❌ Xato: " + r.description;
       if (env.CHANNEL) {
         const me = (await tg(env, "getMe", {})).result;
