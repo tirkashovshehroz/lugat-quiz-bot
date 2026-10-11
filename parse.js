@@ -56,6 +56,8 @@ const NUMBERED = /^\s*\d+\s*[.)]?\s+\S/;
 
 function isHeader(line) {
   if (!/\p{L}/u.test(line) || /\d/.test(line) || line.length > 60) return false;
+  // "USA - AQSH" kabi katta harfli so'z juftligi sarlavha emas (sarlavhada uzun tire "—" bo'ladi)
+  if (splitLine(line) && !/\s[—–]\s/.test(line)) return false;
   return line === line.toLocaleUpperCase("tr") && line !== line.toLocaleLowerCase("tr");
 }
 

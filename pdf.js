@@ -437,9 +437,16 @@ function layout(runs, width) {
       if (last && Math.abs(last.y - s.y) <= s.size * 0.45) last.text += "   " + s.text;
       else out.push({ y: s.y, text: s.text });
     }
-    return out.map((o) => o.text.replace(/\s+/g, " ").trim());
+    return out.map((o) => fixRtl(o.text.normalize("NFKC")).replace(/\s+/g, " ").trim());
   };
   return [...lineText(cols[0]), ...lineText(cols[1])];
+}
+
+// PDF arab/ibroniy matnni ko'rinish tartibida (teskari) saqlaydi — to'g'ri tartibga qaytaramiz
+const RTL = "\\u0590-\\u08FF\\uFB1D-\\uFDFF\\uFE70-\\uFEFF";
+const RTL_RUN = new RegExp(`[${RTL}]+(?:[\\s\\u0640]+[${RTL}]+)*`, "gu");
+function fixRtl(s) {
+  return s.replace(RTL_RUN, (m) => [...m].reverse().join(""));
 }
 
 function pushSeg(cols, seg, mid, y) {
