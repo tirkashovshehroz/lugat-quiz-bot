@@ -569,8 +569,8 @@ export class Chat extends DurableObject {
           return this.send(field === "title" ? `✏️ Yangi nomni yozing:\n(hozirgi: <b>${esc(quiz.title)}</b>)` :
             "📝 Yangi tavsifni yozing (o'chirish uchun «-» yozing):");
         }
-        if (field === "timer") return this.edit(msgId, "⏱ Yangi vaqtni tanlang:", { reply_markup: timerKb(`et:${id}`) });
-        if (field === "shuf") return this.edit(msgId, "🔀 Aralashtirishni tanlang:", { reply_markup: shuffleKb(`es:${id}`) });
+        if (field === "timer") return this.edit(msgId, "⏱ Yangi vaqtni tanlang:", { reply_markup: timerKb("et", `:${id}`) });
+        if (field === "shuf") return this.edit(msgId, "🔀 Aralashtirishni tanlang:", { reply_markup: shuffleKb("es", `:${id}`) });
       }
       if (kind === "et" || kind === "es") {
         const v = val.split(":")[0];
@@ -809,12 +809,12 @@ export class Chat extends DurableObject {
   }
 }
 
-function timerKb(prefix) {
-  const b = (t) => btn(timerShort(t), `${prefix}:${t}`);
+function timerKb(prefix, suffix = "") {
+  const b = (t) => btn(timerShort(t), `${prefix}:${t}${suffix}`);
   return kb([TIMERS.slice(0, 4).map(b), TIMERS.slice(4, 7).map(b), TIMERS.slice(7).map(b)]);
 }
-function shuffleKb(prefix) {
-  return kb(Object.entries(SHUFFLE).map(([k, v]) => [btn(v, `${prefix}:${k}`)]));
+function shuffleKb(prefix, suffix = "") {
+  return kb(Object.entries(SHUFFLE).map(([k, v]) => [btn(v, `${prefix}:${k}${suffix}`)]));
 }
 
 // ---------------- Inline ulashish (@bot <test>) ----------------
