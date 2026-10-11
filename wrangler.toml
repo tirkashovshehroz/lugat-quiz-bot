@@ -2,9 +2,11 @@ name = "lugat-quiz-bot"
 main = "index.js"
 compatibility_date = "2025-04-01"
 
-# Majburiy a'zolik kanali (o'chirish uchun qatorni o'chiring)
 [vars]
+# Majburiy a'zolik kanali
 CHANNEL = "@Turk_tili_Milliy_va_TYS"
+# Bot muallifi (doim ko'rinadi)
+AUTHOR = "@Shehroz_hoca"
 
 [[durable_objects.bindings]]
 name = "CHAT"

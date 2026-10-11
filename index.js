@@ -10,6 +10,13 @@ const DIRS = { fwd: "So'z → tarjima", rev: "Tarjima → so'z", mix: "Aralash" 
 const TIMERS = [10, 15, 30, 45, 60, 120, 180, 240, 300, 600];
 const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: "Faqat savollar", a: "Faqat javoblar" };
 
+// Pastda doim ko'rinib turadigan tugmalar (shaxsiy chatda)
+const BTN_NEW = "➕ Yangi test";
+const BTN_MY = "📚 Testlarim";
+const BTN_AUTHOR = "👨‍🏫 Muallif";
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_AUTHOR }]], resize_keyboard: true, is_persistent: true };
+const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
+
 const HELP =
   "📚 <b>LingoUP bot</b>\n\n" +
   "Fayl yuboring — bot undan tayyor test tuzib beradi.\n\n" +
@@ -228,8 +235,17 @@ export class Chat extends DurableObject {
   joinPrompt() {
     const ch = this.env.CHANNEL;
     return this.send(
-      `📢 Botdan foydalanish uchun avval kanalimizga a'zo bo'ling:\n👉 ${esc(ch)}\n\nA'zo bo'lgach, «✅ Tekshirish» tugmasini bosing.`,
+      `📢 Botdan foydalanish uchun avval kanalimizga a'zo bo'ling:\n👉 ${esc(ch)}\n\nA'zo bo'lgach, «✅ Tekshirish» tugmasini bosing.\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`,
       { reply_markup: kb([[{ text: "📢 Kanalga o'tish", url: channelUrl(ch) }], [btn("✅ Tekshirish", "chk")]]) });
+  }
+
+  sendHelp() {
+    return this.send(HELP + `\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`, { reply_markup: MAIN_KB });
+  }
+  sendAuthor() {
+    const a = authorOf(this.env);
+    return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇`,
+      { reply_markup: kb([[{ text: "✉️ Muallifga yozish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
   }
 
   async handle(update, chatId) {
@@ -262,9 +278,9 @@ export class Chat extends DurableObject {
       switch (cmd.toLowerCase()) {
         case "start":
           if (arg) return this.openQuiz(arg, m.from, m.chat.type);
-          return isPrivate || target ? this.send(HELP) : null;
+          return isPrivate ? this.sendHelp() : target ? this.send(HELP) : null;
         case "help":
-          return this.send(HELP);
+          return isPrivate ? this.sendHelp() : this.send(HELP);
         case "stop":
           return this.stop(m.from.id);
         case "newquiz":
@@ -287,6 +303,14 @@ export class Chat extends DurableObject {
     }
     if (!isPrivate) return;
     if (m.document) return this.onFile(m.document);
+    // Pastki tugmalar
+    if (text === BTN_NEW) {
+      await this.st.delete("create");
+      await this.st.delete("edit");
+      return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
+    }
+    if (text === BTN_MY) return this.myTests(m.from.id);
+    if (text === BTN_AUTHOR) return this.sendAuthor();
     if (!text) return;
 
     // Tahrirlash uchun matn kutilmoqda
@@ -503,7 +527,7 @@ export class Chat extends DurableObject {
         await this.st.delete("pendingStart");
         return this.openQuiz(pending, cq.from, "private");
       }
-      return this.send(HELP);
+      return this.sendHelp();
     }
 
     // Test yaratish
