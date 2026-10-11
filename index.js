@@ -1,4 +1,4 @@
-// Lug'at Quiz Bot — Cloudflare Workers versiyasi (bepul tarifda ishlaydi)
+// LingoUP bot — Cloudflare Workers versiyasi (bepul tarifda ishlaydi)
 // QuizBot kabi ishlaydi, lekin savollar fayldan avtomatik tuziladi.
 import { DurableObject } from "cloudflare:workers";
 import { parseFile, parseText } from "./parse.js";
@@ -13,7 +13,7 @@ const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: 
 const HELP =
   "📚 <b>LingoUP bot</b>\n\n" +
   "Fayl yuboring — bot undan tayyor test tuzib beradi.\n\n" +
-  "1️⃣ Lug'at yoki tayyor test faylini yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
+  "1️⃣ Faylni yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
   "   (yoki matnni shunchaki xabar qilib yozing)\n" +
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
@@ -272,9 +272,7 @@ export class Chat extends DurableObject {
           if (!isPrivate) return;
           await this.st.delete("create");
           await this.st.delete("edit");
-          return this.send("📄 Lug'at yoki test faylini yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.\n\n" +
-            "<b>Lug'at:</b>\n<code>kitap - kitob\nev - uy</code>\n\n" +
-            "<b>Test (istalgan fan):</b>\n<code>1. Amir Temur qachon tug'ilgan?\nA) 1336-yil\nB) 1370-yil\nC) 1405-yil\nJavob: A</code>");
+          return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
         case "mytests":
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
@@ -317,10 +315,10 @@ export class Chat extends DurableObject {
     const parsed = parseText(text);
     if (parsed.pairs.length >= 4 || parsed.mcq.questions.length >= 2) {
       const d = new Date(Date.now() + 5 * 3600e3);
-      const title = `${parsed.mcq.questions.length >= 2 ? "Test" : "Lug'at"} ${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const title = `Test ${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
       return this.beginCreate(parsed, title);
     }
-    return this.send("Lug'at faylini yuboring yoki so'zlarni yozing. Yordam: /help");
+    return this.send("📄 Test tuzish uchun faylni yuboring yoki /newquiz buyrug'ini bosing.");
   }
 
   async onFile(doc) {
@@ -335,7 +333,7 @@ export class Chat extends DurableObject {
         if (parsed.mcq?.missing) return this.send(`❗ ${parsed.mcq.missing} ta savol topildi, lekin to'g'ri javoblari ko'rsatilmagan.\nHar bir savol ostiga <code>Javob: B</code> kabi yozing yoki to'g'ri variant oldiga * qo'ying.`);
         return this.send(/\.pdf$/i.test(name)
           ? "❗ PDF ichidan matn topilmadi. Skanerlangan (rasm) PDF bo'lishi mumkin — Word'dan saqlangan PDF yuboring."
-          : "❗ Fayldan so'z yoki test savoli topilmadi. Namuna: /newquiz");
+          : "❗ Fayldan so'z yoki test savoli topilmadi. Boshqa fayl yuborib ko'ring.");
       }
       await this.st.delete("edit");
       return this.beginCreate(parsed, name.replace(/\.[^.]+$/, "").replace(/_/g, " "));
@@ -438,7 +436,7 @@ export class Chat extends DurableObject {
 
   async myTests(owner) {
     const rows = await this.store().listQuizzes(owner);
-    if (!rows.length) return this.send("Hali test yo'q. Lug'at faylini yuboring yoki /newquiz 📄");
+    if (!rows.length) return this.send("Hali test yo'q. Faylni yuboring yoki /newquiz 📄");
     return this.send("📚 Sizning testlaringiz:", {
       reply_markup: kb(rows.map((r) => [btn(`🎲 ${r.title} · ${r.count} savol`, `open:${r.id}`)])),
     });
