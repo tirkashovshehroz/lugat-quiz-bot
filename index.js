@@ -2,21 +2,22 @@
 import { DurableObject } from "cloudflare:workers";
 import { parseFile, parseText } from "./parse.js";
 
-const MAX_FILE = 5 * 1024 * 1024;
+const MAX_FILE = 20 * 1024 * 1024;
 const MAX_QUESTIONS = 300;
 const GROUP_DEFAULT_TIMER = 30;
 const DIRS = { fwd: "So'z → tarjima", rev: "Tarjima → so'z", mix: "Aralash" };
 
 const HELP =
   "📚 <b>Lug'at Quiz Bot</b>\n\n" +
-  "1️⃣ Lug'at faylini yuboring: <b>.txt, .docx, .xlsx, .csv</b>\n" +
+  "1️⃣ Lug'at faylini yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
   "   (yoki ro'yxatni shunchaki xabar qilib yozing)\n" +
   "2️⃣ Savollar sonini, yo'nalishni va vaqtni tanlang\n" +
   "3️⃣ Test tayyor! O'zingiz yeching yoki guruhga yuboring 👥\n\n" +
   "<b>Format</b> — har qatorda so'z va tarjima:\n" +
   "<code>kitap - kitob\nev — uy\nokul: maktab\napple = olma</code>\n" +
   "Excel/Word jadvalda: 1-ustun so'z, 2-ustun tarjima.\n" +
-  "Istalgan til bo'laveradi 🌍\n\n" +
+  "Bo'limlar (Otlar, Fe'llar, Iboralar) avtomatik ajratiladi.\n" +
+  "Istalgan til bo'laveradi 🌍 Fayllar saqlanmaydi — faqat test tuzish uchun o'qiladi.\n\n" +
   "/mytests — mening testlarim\n/stop — testni to'xtatish";
 
 // ---------------- Yordamchilar ----------------
@@ -172,39 +173,59 @@ export class Chat extends DurableObject {
       await this.st.put("create", create);
       return this.askDirection();
     }
-    const pairs = parseText(text);
-    if (pairs.length >= 4) {
+    const parsed = parseText(text);
+    if (parsed.pairs.length >= 4) {
       const d = new Date(Date.now() + 5 * 3600e3);
       const title = `Lug'at ${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-      return this.beginCreate(pairs, title);
+      return this.beginCreate(parsed, title);
     }
     return this.send("Lug'at faylini yuboring yoki ro'yxatni yozing. Yordam: /help");
   }
 
   async onFile(doc) {
-    if (doc.file_size > MAX_FILE) return this.send("❗ Fayl 5 MB dan katta.");
+    if (doc.file_size > MAX_FILE) return this.send("❗ Fayl 20 MB dan katta. Darslarni alohida fayl qilib yuboring.");
     const name = doc.file_name || "lugat.txt";
-    if (/\.(pdf|doc|xls)$/i.test(name)) return this.send("❗ Bu formatni o'qiy olmayman. .txt, .docx, .xlsx yoki .csv yuboring.");
     try {
       const f = await tg(this.env, "getFile", { file_id: doc.file_id });
       const r = await fetch(`https://api.telegram.org/file/bot${this.env.BOT_TOKEN}/${f.result.file_path}`);
-      const pairs = await parseFile(name, new Uint8Array(await r.arrayBuffer()));
-      return this.beginCreate(pairs, name.replace(/\.[^.]+$/, ""));
+      // Fayl faqat xotirada o'qiladi va hech qayerga saqlanmaydi
+      const parsed = await parseFile(name, new Uint8Array(await r.arrayBuffer()));
+      if (!parsed.pairs.length && /\.pdf$/i.test(name))
+        return this.send("❗ PDF ichidan so'z topilmadi. Skanerlangan (rasm) PDF bo'lishi mumkin — Word'dan saqlangan PDF yuboring.");
+      return this.beginCreate(parsed, name.replace(/\.[^.]+$/, "").replace(/_/g, " "));
     } catch (e) {
       console.log("Fayl xatosi", e);
       return this.send("❗ Faylni o'qib bo'lmadi. Formatni tekshiring: /help");
     }
   }
 
-  async beginCreate(pairs, title) {
-    if (pairs.length < 4) return this.send("❗ Kamida 4 ta so'z juftligi kerak. Format:\n<code>so'z - tarjima</code>\n\n/help");
-    await this.st.put("create", { pairs, title: title.slice(0, 60), step: "count" });
+  async beginCreate(parsed, fallbackTitle) {
+    const all = parsed.pairs;
+    if (all.length < 4) return this.send("❗ Kamida 4 ta so'z juftligi kerak. Format:\n<code>so'z - tarjima</code>\n\n/help");
+    const title = (parsed.title || fallbackTitle).slice(0, 50);
+    const secs = parsed.sections
+      .map((name, i) => ({ name, i, n: all.filter((p) => p[2] === i).length }))
+      .filter((s) => s.n > 0);
+    if (secs.length > 1) {
+      await this.st.put("create", { all, title, secs, step: "sec" });
+      const rows = secs.map((s) => [btn(`${s.name} (${s.n})`, `sec:${s.i}`)]);
+      rows.push([btn(`📚 Hammasi (${all.length})`, "sec:all")]);
+      return this.send(`📄 <b>${esc(title)}</b>\n📖 ${all.length} ta so'z topildi.\n\nQaysi bo'limdan test tuzamiz?`, { reply_markup: kb(rows) });
+    }
+    return this.askCount(all.map((p) => [p[0], p[1]]), title);
+  }
+
+  async askCount(pairs, title, editId) {
+    if (pairs.length < 4) return this.send("❗ Bu bo'limda 4 tadan kam so'z bor. Boshqa bo'limni tanlang yoki \"Hammasi\" ni bosing.");
+    await this.st.put("create", { pairs, title, step: "count" });
     const n = pairs.length;
     const opts = [10, 20, 30, 50].filter((x) => x < n);
-    return this.send(`📖 <b>${n}</b> ta so'z topildi.\n\nNechta savol bo'lsin?`, {
-      reply_markup: kb([opts.map((x) => btn(String(x), `cnt:${x}`)),
-        [btn(`Hammasi (${n})`, `cnt:${n}`), btn("✏️ Boshqa son", "cnt:custom")]]),
-    });
+    const text = `📄 <b>${esc(title)}</b>\n📖 <b>${n}</b> ta so'z.\n\nNechta savol bo'lsin?`;
+    const reply_markup = kb([opts.map((x) => btn(String(x), `cnt:${x}`)),
+      [btn(`Hammasi (${n})`, `cnt:${n}`), btn("✏️ Boshqa son", "cnt:custom")]]);
+    return editId
+      ? tg(this.env, "editMessageText", { chat_id: this.chatId, message_id: editId, text, parse_mode: "HTML", reply_markup })
+      : this.send(text, { reply_markup });
   }
 
   askDirection(editId) {
@@ -247,9 +268,17 @@ export class Chat extends DurableObject {
       tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id, text, show_alert: alert });
     const [kind, val] = [data.split(":")[0], data.slice(data.indexOf(":") + 1)];
 
-    if (["cnt", "dir", "tm"].includes(kind)) {
+    if (["sec", "cnt", "dir", "tm"].includes(kind)) {
       const create = await this.st.get("create");
       if (!create) return answer("Faylni qayta yuboring", true);
+      if (kind === "sec") {
+        if (!create.all) return answer("Faylni qayta yuboring", true);
+        const s = create.secs.find((x) => String(x.i) === val);
+        const pairs = create.all.filter((p) => !s || p[2] === s.i).map((p) => [p[0], p[1]]);
+        await this.askCount(pairs, s ? `${create.title} — ${s.name}` : create.title, msgId);
+        return answer();
+      }
+      if (!create.pairs) return answer("Faylni qayta yuboring", true);
       if (kind === "cnt") {
         if (val === "custom") {
           create.step = "custom";

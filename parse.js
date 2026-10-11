@@ -1,4 +1,6 @@
-// Lug'at fayllarini o'qish: .txt .csv .tsv .docx .xlsx va oddiy matn (tashqi kutubxonasiz)
+// Lug'at fayllarini o'qish: .pdf .txt .csv .tsv .docx .xlsx va oddiy matn (tashqi kutubxonasiz)
+import { pdfToLines } from "./pdf.js";
+import { docLines, xlsLines, rowLine } from "./ole.js";
 
 const SEPS = ["\t", " — ", " – ", " - ", " = ", " : ", "—", "–", "=", ";", "|", ":", " -", "- ", "-", ","];
 const NUM = /^\s*\d+\s*[.)]\s*/;
@@ -20,11 +22,11 @@ export function splitLine(line) {
 function dedupe(pairs) {
   const seen = new Set();
   const out = [];
-  for (const [a, b] of pairs) {
-    const k = a.toLowerCase();
+  for (const p of pairs) {
+    const k = p[0].toLowerCase();
     if (!seen.has(k)) {
       seen.add(k);
-      out.push([a, b]);
+      out.push(p);
     }
   }
   return out;
@@ -44,7 +46,70 @@ function fromRows(rows) {
 }
 
 export function parseText(text) {
-  return dedupe(text.split(/\r?\n/).map(splitLine).filter(Boolean));
+  return parseLines(text.split(/\r?\n/));
+}
+
+// ---------- Tuzilmali matn: sarlavha (A1 1-DARS), bo'limlar (OTLAR / FE'LLAR), raqamli ro'yxat ----------
+const TITLE = /^([ABC][12])\s*[-–.]?\s*(\d+)\s*[-–.]?\s*DARS\b/i;
+const PURE_NUM = /^\d{1,4}$/;
+const NUMBERED = /^\s*\d+\s*[.)]?\s+\S/;
+
+function isHeader(line) {
+  if (!/\p{L}/u.test(line) || /\d/.test(line) || line.length > 60) return false;
+  return line === line.toLocaleUpperCase("tr") && line !== line.toLocaleLowerCase("tr");
+}
+
+function sectionName(h) {
+  const parts = h.split(/\s+[—–-]\s+/);
+  const s = (parts[1] || parts[0]).trim().replace(/İ/g, "i").toLowerCase();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function tidy(s) {
+  return s.replace(/\s+([,.;:)])/g, "$1").replace(/\(\s+/g, "(").replace(/(\p{L}) -(\p{L})/gu, "$1-$2").replace(/\s+/g, " ").trim();
+}
+
+export function parseLines(rawLines) {
+  const lines = rawLines.map((l) => l.replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean);
+  const sepLines = lines.filter((l) => splitLine(l));
+  const numbered = sepLines.length > 0 && sepLines.filter((l) => NUMBERED.test(l)).length >= sepLines.length * 0.6;
+  let title = null;
+  const sections = [];
+  let sec = -1;
+  const pairs = [];
+  let last = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = numbered ? lines[i].replace(/^\d+\s*[.)]?\s+/, "") : lines[i];
+    const isNum = NUMBERED.test(lines[i]) || lines[i].includes("\t"); // jadval qatori ham alohida yozuv
+    if (PURE_NUM.test(lines[i])) {
+      // so'z raqami (ikki qatorli yozuvda) — davom etadi; sahifa raqami — zanjirni uzadi
+      if (last?.wait) last.wait = false;
+      else last = null;
+      continue;
+    }
+    const tm = line.match(TITLE);
+    if (tm) { title ??= `${tm[1].toUpperCase()} ${tm[2]}-dars`; last = null; continue; }
+    if (isHeader(line)) {
+      sections.push(sectionName(line));
+      sec = sections.length - 1;
+      last = null;
+      continue;
+    }
+    if (/@|https?:|t\.me\//i.test(line)) { last = null; continue; }
+    const p = splitLine(line);
+    if (!numbered) {
+      if (p) pairs.push([tidy(p[0]), tidy(p[1]), sec]);
+      continue;
+    }
+    const startsEntry = isNum || (p && PURE_NUM.test(lines[i + 1] || ""));
+    if (p && startsEntry) {
+      const e = [tidy(p[0]), tidy(p[1]), sec];
+      pairs.push(e);
+      last = { e, wait: !isNum };
+    } else if (last) last.e[1] = tidy(last.e[1] + " " + line);
+    else last = null;
+  }
+  return { pairs: dedupe(pairs), title, sections };
 }
 
 function decode(bytes) {
@@ -106,20 +171,16 @@ function docxText(xml) {
   return unxml([...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join(""));
 }
 
-function parseDocx(xml) {
-  const pairs = [];
-  const tables = [];
-  xml = xml.replace(/<w:tbl>[\s\S]*?<\/w:tbl>/g, (t) => { tables.push(t); return ""; });
-  for (const m of xml.matchAll(/<w:p[\s>][\s\S]*?<\/w:p>/g)) {
-    const p = splitLine(docxText(m[0]));
-    if (p) pairs.push(p);
+// Hujjat tartibida: paragraflar → qatorlar, jadval qatorlari → "so'z<TAB>tarjima"
+function docxLines(xml) {
+  const out = [];
+  for (const m of xml.matchAll(/<w:tbl>[\s\S]*?<\/w:tbl>|<w:p[\s>][\s\S]*?<\/w:p>/g)) {
+    if (m[0].startsWith("<w:tbl>")) {
+      for (const r of m[0].matchAll(/<w:tr[\s>][\s\S]*?<\/w:tr>/g))
+        out.push(rowLine([...r[0].matchAll(/<w:tc[\s>][\s\S]*?<\/w:tc>/g)].map((c) => docxText(c[0]))));
+    } else out.push(docxText(m[0]));
   }
-  for (const t of tables) {
-    const rows = [...t.matchAll(/<w:tr[\s>][\s\S]*?<\/w:tr>/g)].map((r) =>
-      [...r[0].matchAll(/<w:tc[\s>][\s\S]*?<\/w:tc>/g)].map((c) => docxText(c[0])));
-    pairs.push(...fromRows(rows));
-  }
-  return pairs;
+  return out;
 }
 
 function colIndex(ref) {
@@ -129,7 +190,7 @@ function colIndex(ref) {
   return n - 1;
 }
 
-function parseXlsx(files) {
+function xlsxLines(files) {
   const shared = [];
   const ss = files["xl/sharedStrings.xml"];
   if (ss) {
@@ -137,7 +198,7 @@ function parseXlsx(files) {
       shared.push(unxml([...si[1].matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/g)].map((m) => m[1]).join("")));
     }
   }
-  const pairs = [];
+  const lines = [];
   const sheets = Object.keys(files).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
   for (const name of sheets) {
     const rows = [];
@@ -158,20 +219,23 @@ function parseXlsx(files) {
       }
       rows.push(row);
     }
-    pairs.push(...fromRows(rows));
+    for (const row of rows) { const l = rowLine(row); if (l) lines.push(l); }
   }
-  return pairs;
+  return lines;
 }
 
 export async function parseFile(filename, bytes) {
   const name = filename.toLowerCase();
   if (name.endsWith(".docx")) {
     const f = await unzip(bytes, (n) => n === "word/document.xml");
-    return dedupe(parseDocx(f["word/document.xml"] || ""));
+    return parseLines(docxLines(f["word/document.xml"] || ""));
   }
   if (name.endsWith(".xlsx") || name.endsWith(".xlsm")) {
     const f = await unzip(bytes, (n) => n === "xl/sharedStrings.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
-    return dedupe(parseXlsx(f));
+    return parseLines(xlsxLines(f));
   }
+  if (name.endsWith(".pdf")) return parseLines(await pdfToLines(bytes));
+  if (name.endsWith(".doc")) return parseLines(docLines(bytes));
+  if (name.endsWith(".xls")) return parseLines(xlsLines(bytes));
   return parseText(decode(bytes));
 }
