@@ -56,7 +56,7 @@ const HELP =
   "1️⃣ Faylni yuboring (PDF, Word, Excel, .txt)\n" +
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
-  "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
+  "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing\n\n" +
   "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
