@@ -14,7 +14,8 @@ const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: 
 const BTN_NEW = "➕ Yangi test";
 const BTN_MY = "📚 Testlarim";
 const BTN_AUTHOR = "👨‍🏫 Muallif";
-const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_AUTHOR }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
+const BTN_GUIDE = "📖 Yo'riqnoma";
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 const HELP =
@@ -24,7 +25,7 @@ const HELP =
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
-  "/newquiz — yangi test\n/mytests — mening testlarim\n/stop — testni to'xtatish\n/cancel — bekor qilish";
+  "/newquiz — yangi test\n/mytests — mening testlarim\n/guide — yo'riqnoma\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
 async function tg(env, method, body) {
@@ -120,6 +121,7 @@ export class Store extends DurableObject {
       try { this.sql.exec(`ALTER TABLE quizzes ADD COLUMN ${col}`); } catch {}
     }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS results(qid TEXT, uid INTEGER, name TEXT, ok INTEGER, total INTEGER,
       secs REAL, created INTEGER, PRIMARY KEY(qid, uid))`);
   }
@@ -173,6 +175,12 @@ export class Store extends DurableObject {
   }
   top(qid, n = 10) {
     return this.sql.exec("SELECT name,ok,total,secs FROM results WHERE qid=? ORDER BY ok DESC, secs ASC LIMIT ?", qid, n).toArray();
+  }
+  getSetting(k) {
+    return this.sql.exec("SELECT v FROM settings WHERE k=?", k).toArray()[0]?.v ?? null;
+  }
+  setSetting(k, v) {
+    this.sql.exec("INSERT OR REPLACE INTO settings VALUES(?,?)", k, v);
   }
   mapPoll(pid, chat) {
     this.sql.exec("DELETE FROM polls WHERE created < ?", Date.now() - 86400000);
@@ -242,6 +250,16 @@ export class Chat extends DurableObject {
   sendHelp() {
     return this.send(HELP + `\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`, { reply_markup: MAIN_KB });
   }
+  isAuthor(from) {
+    const a = authorOf(this.env).replace(/^@/, "").toLowerCase();
+    return (from?.username || "").toLowerCase() === a || (this.env.ADMIN_ID && String(from?.id) === String(this.env.ADMIN_ID));
+  }
+  async sendGuide() {
+    const fid = await this.store().getSetting("guide");
+    if (!fid) return this.send("📖 Yo'riqnoma hali yuklanmagan. Savollar bo'lsa, muallifga yozing: /author");
+    return tg(this.env, "sendDocument", { chat_id: this.chatId, document: fid,
+      caption: "📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>\n\nSavollar bo'lsa: " + esc(authorOf(this.env)), parse_mode: "HTML" });
+  }
   sendAuthor() {
     const a = authorOf(this.env);
     return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇`,
@@ -282,6 +300,14 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "guide":
+        case "yoriqnoma":
+          return this.sendGuide();
+        case "setguide":
+          if (!isPrivate) return;
+          if (!this.isAuthor(m.from)) return this.send("Bu buyruq faqat bot muallifi uchun.");
+          await this.st.put("awaitGuide", true);
+          return this.send("📖 Yo'riqnoma PDF faylini yuboring. Obunachilar uni «📖 Yo'riqnoma» tugmasi orqali yuklab oladi.\nBekor qilish: /cancel");
         case "help":
           return isPrivate ? this.sendHelp() : this.send(HELP);
         case "stop":
@@ -295,6 +321,7 @@ export class Chat extends DurableObject {
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
         case "cancel":
+          await this.st.delete("awaitGuide");
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
@@ -305,6 +332,12 @@ export class Chat extends DurableObject {
       return;
     }
     if (!isPrivate) return;
+    if (m.document && (await this.st.get("awaitGuide")) && this.isAuthor(m.from)) {
+      await this.st.delete("awaitGuide");
+      await this.store().setSetting("guide", m.document.file_id);
+      await this.send("✅ Yo'riqnoma saqlandi! Obunachilar endi uni «📖 Yo'riqnoma» tugmasi yoki /guide orqali yuklab olishadi.");
+      return this.sendGuide();
+    }
     if (m.document) return this.onFile(m.document);
     // Pastki tugmalar
     if (text === BTN_NEW) {
@@ -314,6 +347,7 @@ export class Chat extends DurableObject {
     }
     if (text === BTN_MY) return this.myTests(m.from.id);
     if (text === BTN_AUTHOR) return this.sendAuthor();
+    if (text === BTN_GUIDE) return this.sendGuide();
     if (!text) return;
 
     // Tahrirlash uchun matn kutilmoqda
@@ -928,6 +962,7 @@ export default {
         { command: "mytests", description: "Mening testlarim" },
         { command: "stop", description: "Testni to'xtatish" },
         { command: "cancel", description: "Bekor qilish" },
+        { command: "guide", description: "Yo'riqnoma (PDF)" },
         { command: "author", description: "Muallif bilan bog'lanish" },
         { command: "help", description: "Yordam" },
       ] });
