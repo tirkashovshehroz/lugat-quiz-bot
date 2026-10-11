@@ -14,7 +14,7 @@ const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: 
 const BTN_NEW = "➕ Yangi test";
 const BTN_MY = "📚 Testlarim";
 const BTN_AUTHOR = "👨‍🏫 Muallif";
-const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_AUTHOR }]], resize_keyboard: true, is_persistent: true };
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_AUTHOR }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 const HELP =
@@ -279,6 +279,9 @@ export class Chat extends DurableObject {
         case "start":
           if (arg) return this.openQuiz(arg, m.from, m.chat.type);
           return isPrivate ? this.sendHelp() : target ? this.send(HELP) : null;
+        case "author":
+        case "muallif":
+          return this.sendAuthor();
         case "help":
           return isPrivate ? this.sendHelp() : this.send(HELP);
         case "stop":
@@ -925,6 +928,7 @@ export default {
         { command: "mytests", description: "Mening testlarim" },
         { command: "stop", description: "Testni to'xtatish" },
         { command: "cancel", description: "Bekor qilish" },
+        { command: "author", description: "Muallif bilan bog'lanish" },
         { command: "help", description: "Yordam" },
       ] });
       let msg = r.ok ? "✅ Bot ulandi! Endi Telegramda botingizga /start yozing." : "❌ Xato: " + r.description;
