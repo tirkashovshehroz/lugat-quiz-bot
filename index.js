@@ -11,7 +11,7 @@ const TIMERS = [10, 15, 30, 45, 60, 120, 180, 240, 300, 600];
 const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: "Faqat savollar", a: "Faqat javoblar" };
 
 const HELP =
-  "📚 <b>Lug'at Quiz Bot</b>\n\n" +
+  "📚 <b>LingoUP Bot</b>\n\n" +
   "Fayl yuboring — bot undan tayyor test tuzib beradi.\n\n" +
   "1️⃣ Fayl yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
   "   (yoki so'zlarni shunchaki xabar qilib yozing)\n" +
