@@ -18,11 +18,7 @@ const HELP =
   "2️⃣ Bo'lim, savollar soni va yo'nalishni tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
-  "<b>Format</b> — har qatorda so'z va tarjima:\n" +
-  "<code>kitap - kitob\nev — uy\nokul: maktab</code>\n" +
-  "Jadvalda: 1-ustun so'z, 2-ustun tarjima. Istalgan til va fan 🌍\n" +
-  "Fayllar saqlanmaydi — faqat test tuzish uchun o'qiladi.\n\n" +
-  "/newquiz — yangi test\n/mytests — mening testlarim\n/stop — testni to'xtatish\n/cancel — bekor qilish";
+   "/newquiz — yangi test\n/mytests — mening testlarim\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
 async function tg(env, method, body) {
