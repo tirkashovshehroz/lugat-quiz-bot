@@ -34,6 +34,40 @@ async function inflate(bytes) {
   return new Uint8Array(0);
 }
 
+function ascii85(u8) {
+  let s = bin(u8).replace(/\s+/g, "");
+  if (s.startsWith("<~")) s = s.slice(2);
+  const end = s.indexOf("~>");
+  if (end >= 0) s = s.slice(0, end);
+  const out = [];
+  let group = [];
+  const flush = (n) => {
+    while (group.length < 5) group.push(84);
+    let v = 0;
+    for (const c of group) v = v * 85 + c;
+    const bytes = [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+    out.push(...bytes.slice(0, n));
+    group = [];
+  };
+  for (const ch of s) {
+    if (ch === "z" && !group.length) { out.push(0, 0, 0, 0); continue; }
+    const c = ch.charCodeAt(0) - 33;
+    if (c < 0 || c > 84) continue;
+    group.push(c);
+    if (group.length === 5) flush(4);
+  }
+  if (group.length) flush(group.length - 1);
+  return new Uint8Array(out);
+}
+
+function asciiHex(u8) {
+  let h = bin(u8).replace(/>[\s\S]*$/, "").replace(/[^0-9a-fA-F]/g, "");
+  if (h.length % 2) h += "0";
+  const out = new Uint8Array(h.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+  return out;
+}
+
 const bin = (u8) => {
   let s = "";
   for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
@@ -210,6 +244,8 @@ class Doc {
     f = Array.isArray(f) ? f.map((x) => this.get(x)?.name) : f ? [f.name] : [];
     for (const name of f) {
       if (name === "FlateDecode" || name === "Fl") data = await inflate(data);
+      else if (name === "ASCII85Decode" || name === "A85") data = ascii85(data);
+      else if (name === "ASCIIHexDecode" || name === "AHx") data = asciiHex(data);
       else return new Uint8Array(0); // rasmlar va boshqa filtrlar — kerak emas
     }
     this.cache.set(key, data);

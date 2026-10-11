@@ -11,14 +11,14 @@ const TIMERS = [10, 15, 30, 45, 60, 120, 180, 240, 300, 600];
 const SHUFFLE = { all: "Hammasi aralashtiriladi", none: "Aralashtirilmaydi", q: "Faqat savollar", a: "Faqat javoblar" };
 
 const HELP =
-  "📚 <b>LingoUP Bot</b>\n\n" +
+  "📚 <b>LingoUP bot</b>\n\n" +
   "Fayl yuboring — bot undan tayyor test tuzib beradi.\n\n" +
-  "1️⃣ Fayl yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
-  "   (yoki so'zlarni shunchaki xabar qilib yozing)\n" +
-  "2️⃣ Bo'lim, savollar soni va yo'nalishni tanlang\n" +
+  "1️⃣ Lug'at yoki tayyor test faylini yuboring: <b>PDF, Word (.doc/.docx), Excel (.xls/.xlsx), .txt</b>\n" +
+  "   (yoki matnni shunchaki xabar qilib yozing)\n" +
+  "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
-   "/newquiz — yangi test\n/mytests — mening testlarim\n/stop — testni to'xtatish\n/cancel — bekor qilish";
+  "/newquiz — yangi test\n/mytests — mening testlarim\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
 async function tg(env, method, body) {
@@ -272,7 +272,9 @@ export class Chat extends DurableObject {
           if (!isPrivate) return;
           await this.st.delete("create");
           await this.st.delete("edit");
-          return this.send("📄 Lug'at faylini yuboring (PDF, Word, Excel, .txt) yoki so'zlarni xabar qilib yozing:\n<code>kitap - kitob\nev - uy</code>");
+          return this.send("📄 Lug'at yoki test faylini yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.\n\n" +
+            "<b>Lug'at:</b>\n<code>kitap - kitob\nev - uy</code>\n\n" +
+            "<b>Test (istalgan fan):</b>\n<code>1. Amir Temur qachon tug'ilgan?\nA) 1336-yil\nB) 1370-yil\nC) 1405-yil\nJavob: A</code>");
         case "mytests":
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
@@ -299,6 +301,7 @@ export class Chat extends DurableObject {
       const n = parseInt(text.trim(), 10);
       if (!/^\d+$/.test(text.trim()) || n < 1) return this.send("Raqam yozing, masalan: 25");
       create.count = Math.min(n, create.pairs.length);
+      if (create.mcq) return this.askTitle(create);
       create.step = "dir";
       await this.st.put("create", create);
       return this.askDirection();
@@ -312,9 +315,9 @@ export class Chat extends DurableObject {
       return this.askTimer(create);
     }
     const parsed = parseText(text);
-    if (parsed.pairs.length >= 4) {
+    if (parsed.pairs.length >= 4 || parsed.mcq.questions.length >= 2) {
       const d = new Date(Date.now() + 5 * 3600e3);
-      const title = `Lug'at ${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const title = `${parsed.mcq.questions.length >= 2 ? "Test" : "Lug'at"} ${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
       return this.beginCreate(parsed, title);
     }
     return this.send("Lug'at faylini yuboring yoki so'zlarni yozing. Yordam: /help");
@@ -328,8 +331,12 @@ export class Chat extends DurableObject {
       const r = await fetch(`https://api.telegram.org/file/bot${this.env.BOT_TOKEN}/${f.result.file_path}`);
       // Fayl faqat xotirada o'qiladi va hech qayerga saqlanmaydi
       const parsed = await parseFile(name, new Uint8Array(await r.arrayBuffer()));
-      if (!parsed.pairs.length && /\.pdf$/i.test(name))
-        return this.send("❗ PDF ichidan so'z topilmadi. Skanerlangan (rasm) PDF bo'lishi mumkin — Word'dan saqlangan PDF yuboring.");
+      if (!parsed.pairs.length && !parsed.mcq?.questions.length) {
+        if (parsed.mcq?.missing) return this.send(`❗ ${parsed.mcq.missing} ta savol topildi, lekin to'g'ri javoblari ko'rsatilmagan.\nHar bir savol ostiga <code>Javob: B</code> kabi yozing yoki to'g'ri variant oldiga * qo'ying.`);
+        return this.send(/\.pdf$/i.test(name)
+          ? "❗ PDF ichidan matn topilmadi. Skanerlangan (rasm) PDF bo'lishi mumkin — Word'dan saqlangan PDF yuboring."
+          : "❗ Fayldan so'z yoki test savoli topilmadi. Namuna: /newquiz");
+      }
       await this.st.delete("edit");
       return this.beginCreate(parsed, name.replace(/\.[^.]+$/, "").replace(/_/g, " "));
     } catch (e) {
@@ -340,6 +347,14 @@ export class Chat extends DurableObject {
 
   // ---------- Test yaratish bosqichlari ----------
   async beginCreate(parsed, fallbackTitle) {
+    // Tayyor test savollari (istalgan fan)
+    const mcq = parsed.mcq;
+    if (mcq && mcq.questions.length >= 2 && mcq.questions.length >= parsed.pairs.length / 3) {
+      const title = (mcq.title || fallbackTitle).slice(0, 60);
+      let head = `📄 <b>${esc(title)}</b>\n✅ ${mcq.questions.length} ta test savoli topildi (variantlari va to'g'ri javoblari bilan).`;
+      if (mcq.missing) head += `\n⚠️ ${mcq.missing} ta savolda to'g'ri javob ko'rsatilmagan — ular qo'shilmadi.`;
+      return this.askCount(mcq.questions, title, undefined, { mcq: true, head });
+    }
     const all = parsed.pairs;
     if (all.length < 4) return this.send("❗ Kamida 4 ta so'z juftligi kerak. Format:\n<code>so'z - tarjima</code>\n\n/help");
     const title = (parsed.title || fallbackTitle).slice(0, 60);
@@ -355,12 +370,12 @@ export class Chat extends DurableObject {
     return this.askCount(all.map((p) => [p[0], p[1]]), title);
   }
 
-  async askCount(pairs, title, editId) {
-    if (pairs.length < 4) return this.send("❗ Bu bo'limda 4 tadan kam so'z bor. Boshqa bo'limni tanlang.");
-    await this.st.put("create", { pairs, title, step: "count" });
+  async askCount(pairs, title, editId, extra = {}) {
+    if (!extra.mcq && pairs.length < 4) return this.send("❗ Bu bo'limda 4 tadan kam so'z bor. Boshqa bo'limni tanlang.");
+    await this.st.put("create", { pairs, title, step: "count", mcq: !!extra.mcq });
     const n = pairs.length;
     const opts = [10, 20, 30, 50].filter((x) => x < n);
-    const text = `📄 <b>${esc(title)}</b>\n📖 <b>${n}</b> ta so'z.\n\nNechta savol bo'lsin?`;
+    const text = (extra.head || `📄 <b>${esc(title)}</b>\n📖 <b>${n}</b> ta so'z.`) + "\n\nNechta savol bo'lsin?";
     const reply_markup = kb([opts.map((x) => btn(String(x), `cnt:${x}`)),
       [btn(`Hammasi (${n})`, `cnt:${n}`), btn("✏️ Boshqa son", "cnt:custom")]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
@@ -402,10 +417,18 @@ export class Chat extends DurableObject {
   }
 
   async finishCreate(create, uid, msgId) {
-    const questions = buildQuestions(create.pairs, create.count, create.direction || "fwd");
+    let questions, pairs = create.pairs, direction = create.direction || "fwd";
+    if (create.mcq) {
+      // Tayyor savollar: kerakli sonini tanlab, asl tartibini saqlaymiz
+      const idx = sample([...create.pairs.keys()], create.count).sort((a, b) => a - b);
+      questions = idx.map((i) => create.pairs[i]).map((q) => ({ q: q.q, opts: q.opts.map((o) => o || "—"), correct: q.correct,
+        pair: [q.q.length > 80 ? q.q.slice(0, 77) + "…" : q.q, q.opts[q.correct]] }));
+      pairs = [];
+      direction = "mcq";
+    } else questions = buildQuestions(create.pairs, create.count, direction);
     const store = this.store();
     const id = await store.saveQuiz({ owner: uid, title: create.title, description: create.description || "",
-      pairs: create.pairs, direction: create.direction || "fwd", timer: create.timer, shuffle: create.shuffle, questions });
+      pairs, direction, timer: create.timer, shuffle: create.shuffle, questions });
     await this.st.delete("create");
     const quiz = await store.getQuiz(id);
     const c = await cardContent(this.env, quiz, { owner: true, takers: 0 });
@@ -505,9 +528,13 @@ export class Chat extends DurableObject {
           await this.edit(msgId, `Nechta savol? (1–${create.pairs.length}) Raqam yozing:`);
         } else {
           create.count = Math.min(parseInt(val, 10), create.pairs.length);
-          create.step = "dir";
-          await this.st.put("create", create);
-          await this.askDirection(msgId);
+          if (create.mcq) {
+            await this.askTitle(create, msgId);
+          } else {
+            create.step = "dir";
+            await this.st.put("create", create);
+            await this.askDirection(msgId);
+          }
         }
         return answer();
       }
@@ -713,8 +740,16 @@ export class Chat extends DurableObject {
     }
     sess.idx++;
     const q = sess.questions[sess.idx];
-    const body = { chat_id: this.chatId, question: `[${sess.idx + 1}/${sess.questions.length}] ${q.q}`,
-      options: q.opts.map((text) => ({ text })), type: "quiz", correct_option_id: q.correct, is_anonymous: false };
+    const num = `[${sess.idx + 1}/${sess.questions.length}]`;
+    let question = `${num} ${q.q}`;
+    if (question.length > 300) {
+      // Uzun savol: matnini alohida xabar qilib, so'rovnomada qisqa yozamiz
+      await this.send(`<b>${num}</b> ${esc(q.q)}`);
+      question = `${num} ⬆️ Yuqoridagi savolga javob bering`;
+    }
+    const body = { chat_id: this.chatId, question,
+      options: q.opts.map((o) => ({ text: o.length > 100 ? o.slice(0, 99) + "…" : o })),
+      type: "quiz", correct_option_id: q.correct, is_anonymous: false };
     if (sess.timer) body.open_period = sess.timer;
     const r = await tg(this.env, "sendPoll", body);
     if (!r.ok) {
@@ -888,6 +923,6 @@ export default {
       ctx.waitUntil(route(update, env).catch((e) => console.log("Xato", e)));
       return new Response("ok");
     }
-    return new Response("Lug'at Quiz Bot ishlayapti ✅", { headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response("LingoUP bot ishlayapti ✅", { headers: { "content-type": "text/plain; charset=utf-8" } });
   },
 };

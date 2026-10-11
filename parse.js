@@ -1,6 +1,7 @@
 // Lug'at fayllarini o'qish: .pdf .txt .csv .tsv .docx .xlsx va oddiy matn (tashqi kutubxonasiz)
 import { pdfToLines } from "./pdf.js";
-import { docLines, xlsLines, rowLine } from "./ole.js";
+import { docLines, xlsLines, rowLines } from "./ole.js";
+import { parseMcq } from "./mcq.js";
 
 const SEPS = ["\t", " — ", " – ", " - ", " = ", " : ", "—", "–", "=", ";", "|", ":", " -", "- ", "-", ","];
 const NUM = /^\s*\d+\s*[.)]\s*/;
@@ -46,7 +47,7 @@ function fromRows(rows) {
 }
 
 export function parseText(text) {
-  return parseLines(text.split(/\r?\n/));
+  return analyze(text.split(/\r?\n/));
 }
 
 // ---------- Tuzilmali matn: sarlavha (A1 1-DARS), bo'limlar (OTLAR / FE'LLAR), raqamli ro'yxat ----------
@@ -179,7 +180,7 @@ function docxLines(xml) {
   for (const m of xml.matchAll(/<w:tbl>[\s\S]*?<\/w:tbl>|<w:p[\s>][\s\S]*?<\/w:p>/g)) {
     if (m[0].startsWith("<w:tbl>")) {
       for (const r of m[0].matchAll(/<w:tr[\s>][\s\S]*?<\/w:tr>/g))
-        out.push(rowLine([...r[0].matchAll(/<w:tc[\s>][\s\S]*?<\/w:tc>/g)].map((c) => docxText(c[0]))));
+        out.push(...rowLines([...r[0].matchAll(/<w:tc[\s>][\s\S]*?<\/w:tc>/g)].map((c) => docxText(c[0]))));
     } else out.push(docxText(m[0]));
   }
   return out;
@@ -221,23 +222,30 @@ function xlsxLines(files) {
       }
       rows.push(row);
     }
-    for (const row of rows) { const l = rowLine(row); if (l) lines.push(l); }
+    for (const row of rows) lines.push(...rowLines(row).filter(Boolean));
   }
   return lines;
+}
+
+// Lug'at va test savollarini birga tahlil qilish
+function analyze(lines) {
+  const res = parseLines(lines);
+  res.mcq = parseMcq(lines);
+  return res;
 }
 
 export async function parseFile(filename, bytes) {
   const name = filename.toLowerCase();
   if (name.endsWith(".docx")) {
     const f = await unzip(bytes, (n) => n === "word/document.xml");
-    return parseLines(docxLines(f["word/document.xml"] || ""));
+    return analyze(docxLines(f["word/document.xml"] || ""));
   }
   if (name.endsWith(".xlsx") || name.endsWith(".xlsm")) {
     const f = await unzip(bytes, (n) => n === "xl/sharedStrings.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
-    return parseLines(xlsxLines(f));
+    return analyze(xlsxLines(f));
   }
-  if (name.endsWith(".pdf")) return parseLines(await pdfToLines(bytes));
-  if (name.endsWith(".doc")) return parseLines(docLines(bytes));
-  if (name.endsWith(".xls")) return parseLines(xlsLines(bytes));
-  return parseText(decode(bytes));
+  if (name.endsWith(".pdf")) return analyze(await pdfToLines(bytes));
+  if (name.endsWith(".doc")) return analyze(docLines(bytes));
+  if (name.endsWith(".xls")) return analyze(xlsLines(bytes));
+  return analyze(decode(bytes).split(/\r?\n/));
 }
