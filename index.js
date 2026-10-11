@@ -17,7 +17,10 @@ const BTN_AUTHOR = "👨‍🏫 Muallif";
 const BTN_GUIDE = "📖 Yo'riqnoma";
 const BTN_AD = "📣 Reklama berish";
 const BTN_CAT = "🗂 Muallif testlari";
-const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }], [{ text: BTN_AD }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
+const BTN_SET = "⚙️ Sozlamalar";
+const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
+  [{ text: BTN_AD }, { text: BTN_SET }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 // Buyruqlar menyusi: hamma uchun va faqat muallif uchun
@@ -29,6 +32,7 @@ const USER_COMMANDS = [
   { command: "guide", description: "Yo'riqnoma (PDF)" },
   { command: "reklama", description: "📣 Botga reklama berish" },
   { command: "author", description: "Muallif bilan bog'lanish" },
+  { command: "settings", description: "⚙️ Sozlamalar" },
   { command: "stop", description: "Testni to'xtatish" },
   { command: "cancel", description: "Bekor qilish" },
 ];
@@ -198,6 +202,16 @@ export class Store extends DurableObject {
   }
   countByOwner(owner) {
     return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=? AND public=1", owner).toArray()[0].n;
+  }
+  // Foydalanuvchining barcha ma'lumotlarini o'chirish; kanaldagi postlar ro'yxatini qaytaradi
+  deleteUserData(uid) {
+    const own = this.sql.exec("SELECT id, chanMsg FROM quizzes WHERE owner=?", uid).toArray();
+    for (const q of own) this.sql.exec("DELETE FROM results WHERE qid=?", q.id);
+    this.sql.exec("DELETE FROM quizzes WHERE owner=?", uid);
+    this.sql.exec("DELETE FROM results WHERE uid=?", uid);
+    this.sql.exec("DELETE FROM deliveries WHERE uid=?", uid);
+    this.sql.exec("DELETE FROM users WHERE uid=?", uid);
+    return { quizzes: own.length, posts: own.map((q) => q.chanMsg).filter(Boolean) };
   }
   setPublic(id, v) {
     this.sql.exec("UPDATE quizzes SET public=? WHERE id=?", v ? 1 : 0, id);
@@ -429,6 +443,15 @@ export class Chat extends DurableObject {
     }
   }
 
+  settingsMenu(editId) {
+    const text = "⚙️ <b>Sozlamalar</b>\n\n" +
+      "🗑 <b>Ma'lumotlarimni o'chirish</b> — botdagi barcha testlaringiz, natijalaringiz va reytingdagi o'rningiz butunlay o'chiriladi.\n\n" +
+      "⚠️ <b>Telegram akkauntni o'chirish</b> — Telegram'ning rasmiy sahifasi ochiladi. U yerda telefon raqamingiz bilan kirib, " +
+      "akkauntni o'chirishni o'zingiz tasdiqlaysiz. <b>Diqqat:</b> akkaunt o'chirilsa, barcha chatlar, kontaktlar va kanallar qaytarib bo'lmaydigan tarzda yo'qoladi!";
+    const reply_markup = kb([[btn("🗑 Ma'lumotlarimni o'chirish", "deldata")], [{ text: "⚠️ Telegram akkauntni o'chirish", url: TG_DELETE_URL }]]);
+    return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
+  }
+
   adContact() {
     const a = authorOf(this.env);
     return this.send(`📣 Botga reklama joylamoqchi bo'lsangiz ${esc(a)} ga murojaat qiling.`,
@@ -516,6 +539,9 @@ export class Chat extends DurableObject {
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
+        case "settings":
+        case "sozlamalar":
+          return isPrivate ? this.settingsMenu() : null;
         case "tests":
         case "catalog":
           return isPrivate ? this.catalog(0) : null;
@@ -550,6 +576,7 @@ export class Chat extends DurableObject {
     }
     if (text === BTN_MY) return this.myTests(m.from.id);
     if (text === BTN_CAT) return this.catalog(0);
+    if (text === BTN_SET) return this.settingsMenu();
     if (text === BTN_AUTHOR) return this.sendAuthor();
     if (text === BTN_GUIDE) return this.sendGuide();
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
@@ -849,6 +876,21 @@ export class Chat extends DurableObject {
         await answer("O'chirilmoqda…");
         return this.adMenu(msgId);
       }
+    }
+
+    if (kind === "deldata") {
+      await answer();
+      if (val === "ok") {
+        const res = await store.deleteUserData(uid);
+        if (this.env.TESTS_CHANNEL)
+          for (const mid of res.posts) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
+        for (const k of ["sess", "create", "edit", "retry", "reg", "awaitAd", "adDraft", "awaitGuide", "pendingStart"]) await this.st.delete(k);
+        return this.edit(msgId, `✅ Ma'lumotlaringiz o'chirildi.\n🎲 O'chirilgan testlar: ${res.quizzes}\n\nBotdan yana foydalanishingiz mumkin — /start`);
+      }
+      if (val !== "no")
+        return this.edit(msgId, "🗑 <b>Ma'lumotlaringizni o'chirasizmi?</b>\n\nBotdagi barcha testlaringiz (kanaldagi postlari bilan), natijalaringiz va reytingdagi o'rningiz butunlay o'chiriladi. Buni qaytarib bo'lmaydi.",
+          { reply_markup: kb([[btn("Ha, o'chirish", "deldata:ok"), btn("Yo'q", "deldata:no")]]) });
+      return this.settingsMenu(msgId);
     }
 
     if (kind === "pub") {
