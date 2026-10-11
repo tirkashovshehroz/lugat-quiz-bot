@@ -324,8 +324,8 @@ export class Chat extends DurableObject {
     const raw = await this.store().getSetting("ad");
     const ad = raw ? JSON.parse(raw) : null;
     if (!ad) return;
-    const r = await tg(this.env, "copyMessage", { chat_id: this.chatId, from_chat_id: ad.fromChat, message_id: ad.msgId });
-    if (r.ok && ad.pin) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.result.message_id, disable_notification: true });
+    const r = await copyAd(this.env, this.chatId, ad);
+    if (r.ok && ad.pin && r.first) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.first, disable_notification: true });
   }
 
   // ---------- Reklama (faqat muallif) ----------
@@ -344,12 +344,21 @@ export class Chat extends DurableObject {
     const isPrivate = m.chat.type === "private";
     const isGroup = m.chat.type === "group" || m.chat.type === "supergroup";
     const text = m.text || "";
+    // Albomning keyingi rasmlari — mavjud qoralamaga qo'shamiz
+    if (isPrivate && m.media_group_id && this.isAuthor(m.from)) {
+      const d = await this.st.get("adDraft");
+      if (d && d.group === m.media_group_id) {
+        if (!d.msgIds.includes(m.message_id)) d.msgIds.push(m.message_id);
+        await this.st.put("adDraft", d);
+        return;
+      }
+    }
     // Muallif reklama postini yuboryapti
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitAd")) && this.isAuthor(m.from)) {
       await this.st.delete("awaitAd");
-      await this.st.put("adDraft", { fromChat: m.chat.id, msgId: m.message_id });
+      await this.st.put("adDraft", { fromChat: m.chat.id, msgIds: [m.message_id], group: m.media_group_id || null });
       const s = await this.store().userStats();
-      return this.send(`👆 Reklama posti tayyor. <b>${s.users}</b> ta foydalanuvchiga yuboriladi.\n\nQanday tarqatamiz?`, {
+      return this.send(`👆 Reklama posti tayyor${m.media_group_id ? " (albom — barcha rasm/videolar birga boradi, birinchisi qadaladi)" : ""}. <b>${s.users}</b> ta foydalanuvchiga yuboriladi.\n\nQanday tarqatamiz?`, {
         reply_to_message_id: m.message_id,
         reply_markup: kb([[btn("📤 Post qilib yuborish", "ad:send")], [btn("📌 Yuborish va tepaga qadash", "ad:pin")], [btn("❌ Bekor qilish", "ad:cancel")]]) });
     }
@@ -646,7 +655,7 @@ export class Chat extends DurableObject {
         const d = await this.st.get("adDraft");
         if (!d) return answer("Postni qayta yuboring: /reklama", true);
         await this.st.delete("adDraft");
-        job = { mode: val === "pin" ? "pin" : "send", fromChat: d.fromChat, msgId: d.msgId };
+        job = { mode: val === "pin" ? "pin" : "send", fromChat: d.fromChat, msgIds: d.msgIds };
       }
       job.admin = this.chatId;
       job.statusMsg = msgId;
@@ -1033,6 +1042,17 @@ async function onInline(iq, env) {
   return tg(env, "answerInlineQuery", { inline_query_id: iq.id, results, cache_time: 0, is_personal: true });
 }
 
+// Reklamani bitta chatga nusxalash (bitta post yoki albom). Qadash uchun birinchi xabar id sini qaytaradi.
+async function copyAd(env, chatId, ad) {
+  const ids = ad.msgIds || [ad.msgId];
+  if (ids.length === 1) {
+    const r = await tg(env, "copyMessage", { chat_id: chatId, from_chat_id: ad.fromChat, message_id: ids[0] });
+    return { ...r, first: r.result?.message_id };
+  }
+  const r = await tg(env, "copyMessages", { chat_id: chatId, from_chat_id: ad.fromChat, message_ids: [...ids].sort((a, b) => a - b) });
+  return { ...r, first: r.result?.[0]?.message_id };
+}
+
 // ---------------- Reklama tarqatuvchi (navbat bilan, Telegram limitlariga mos) ----------------
 const BATCH = 25;
 export class Caster extends DurableObject {
@@ -1049,7 +1069,7 @@ export class Caster extends DurableObject {
     if (cur && Date.now() - cur.started < 6 * 3600e3) return false;
     const store = this.store();
     // Yangi foydalanuvchilar ham shu reklamani olsin
-    await store.setSetting("ad", job.mode === "unpin" ? "" : JSON.stringify({ fromChat: job.fromChat, msgId: job.msgId, pin: job.mode === "pin" }));
+    await store.setSetting("ad", job.mode === "unpin" ? "" : JSON.stringify({ fromChat: job.fromChat, msgIds: job.msgIds, pin: job.mode === "pin" }));
     await this.st.put("job", { ...job, after: 0, ok: 0, fail: 0, batches: 0, started: Date.now() });
     await this.st.setAlarm(Date.now() + 200);
     return true;
@@ -1073,9 +1093,9 @@ export class Caster extends DurableObject {
       let r;
       if (job.mode === "unpin") r = await tg(this.env, "unpinAllChatMessages", { chat_id: uid });
       else {
-        r = await tg(this.env, "copyMessage", { chat_id: uid, from_chat_id: job.fromChat, message_id: job.msgId });
-        if (r.ok && job.mode === "pin")
-          await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.result.message_id, disable_notification: true });
+        r = await copyAd(this.env, uid, job);
+        if (r.ok && job.mode === "pin" && r.first)
+          await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.first, disable_notification: true });
       }
       if (r.ok) job.ok++;
       else if (r.error_code === 429) {
