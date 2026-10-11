@@ -5,7 +5,7 @@ compatibility_date = "2025-04-01"
 [vars]
 # Majburiy a'zolik kanali
 CHANNEL = "@Turk_tili_Milliy_va_TYS"
-# Bot muallifi (doim ko'rinadi)
+# Bot muallifi (doim ko'rinadi, reklama va yo'riqnomani boshqaradi)
 AUTHOR = "@Shehroz_hoca"
 
 [[durable_objects.bindings]]
@@ -16,6 +16,14 @@ class_name = "Chat"
 name = "STORE"
 class_name = "Store"
 
+[[durable_objects.bindings]]
+name = "CASTER"
+class_name = "Caster"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Chat", "Store"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Caster"]
