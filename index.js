@@ -122,8 +122,15 @@ export class Store extends DurableObject {
     }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS settings(k TEXT PRIMARY KEY, v TEXT)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS users(uid INTEGER PRIMARY KEY, created INTEGER, blocked INTEGER DEFAULT 0)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS results(qid TEXT, uid INTEGER, name TEXT, ok INTEGER, total INTEGER,
       secs REAL, created INTEGER, PRIMARY KEY(qid, uid))`);
+    // Avvaldan bor foydalanuvchilarni (test yaratgan va yechganlar) ro'yxatga qo'shamiz
+    if (!this.sql.exec("SELECT v FROM settings WHERE k='usersBackfill'").toArray().length) {
+      this.sql.exec("INSERT OR IGNORE INTO users(uid,created) SELECT DISTINCT owner, created FROM quizzes WHERE owner > 0");
+      this.sql.exec("INSERT OR IGNORE INTO users(uid,created) SELECT DISTINCT uid, created FROM results WHERE uid > 0");
+      this.sql.exec("INSERT OR REPLACE INTO settings VALUES('usersBackfill','1')");
+    }
   }
   saveQuiz(q) {
     const id = newId();
@@ -175,6 +182,27 @@ export class Store extends DurableObject {
   }
   top(qid, n = 10) {
     return this.sql.exec("SELECT name,ok,total,secs FROM results WHERE qid=? ORDER BY ok DESC, secs ASC LIMIT ?", qid, n).toArray();
+  }
+  // Foydalanuvchilar (reklama tarqatish uchun)
+  addUser(uid) {
+    const had = this.sql.exec("SELECT blocked FROM users WHERE uid=?", uid).toArray()[0];
+    if (had) {
+      if (had.blocked) this.sql.exec("UPDATE users SET blocked=0 WHERE uid=?", uid);
+      return false;
+    }
+    this.sql.exec("INSERT INTO users(uid,created) VALUES(?,?)", uid, Date.now());
+    return true;
+  }
+  listUsers(after, n) {
+    return this.sql.exec("SELECT uid FROM users WHERE uid>? AND blocked=0 ORDER BY uid LIMIT ?", after, n).toArray().map((r) => r.uid);
+  }
+  markBlocked(uid) {
+    this.sql.exec("UPDATE users SET blocked=1 WHERE uid=?", uid);
+  }
+  userStats() {
+    const q = (s) => this.sql.exec(s).toArray()[0].n;
+    return { users: q("SELECT COUNT(*) AS n FROM users WHERE blocked=0"), blocked: q("SELECT COUNT(*) AS n FROM users WHERE blocked=1"),
+      quizzes: q("SELECT COUNT(*) AS n FROM quizzes"), results: q("SELECT COUNT(*) AS n FROM results") };
   }
   getSetting(k) {
     return this.sql.exec("SELECT v FROM settings WHERE k=?", k).toArray()[0]?.v ?? null;
@@ -273,14 +301,42 @@ export class Chat extends DurableObject {
     const cq = update.callback_query;
     const isPrivate = (m?.chat || cq?.message?.chat)?.type === "private";
     const uid = (m || cq)?.from?.id;
+    // Yangi foydalanuvchini ro'yxatga olamiz (reklama uchun) va faol reklamani ko'rsatamiz
+    let isNew = false;
+    if (isPrivate && uid && !(await this.st.get("reg"))) {
+      isNew = await this.store().addUser(uid);
+      await this.st.put("reg", 1);
+    }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
       if (arg) await this.st.put("pendingStart", arg);
       if (cq) await tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id });
-      return this.joinPrompt();
+      await this.joinPrompt();
+      if (isNew) await this.sendActiveAd();
+      return;
     }
-    if (m) return this.onMessage(m);
-    if (cq) return this.onCallback(cq);
+    if (m) await this.onMessage(m);
+    else if (cq) await this.onCallback(cq);
+    if (isNew) await this.sendActiveAd();
+  }
+
+  async sendActiveAd() {
+    const raw = await this.store().getSetting("ad");
+    const ad = raw ? JSON.parse(raw) : null;
+    if (!ad) return;
+    const r = await tg(this.env, "copyMessage", { chat_id: this.chatId, from_chat_id: ad.fromChat, message_id: ad.msgId });
+    if (r.ok && ad.pin) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.result.message_id, disable_notification: true });
+  }
+
+  // ---------- Reklama (faqat muallif) ----------
+  async adMenu() {
+    const s = await this.store().userStats();
+    const raw = await this.store().getSetting("ad");
+    const ad = raw ? JSON.parse(raw) : null;
+    return this.send(`📣 <b>Reklama tarqatish</b>\n\n👥 Faol foydalanuvchilar: <b>${s.users}</b>\n🚫 Botni bloklaganlar: ${s.blocked}\n` +
+      (ad ? `\n📌 Hozir faol reklama bor${ad.pin ? " (qadalgan)" : ""} — yangi foydalanuvchilar ham uni oladi.\n` : "") +
+      "\nReklama postini yuboring: matn, rasm, video, fayl — istalgan ko'rinishda (tugmali post ham bo'ladi, uni boshqa kanaldan forward qiling).\nBekor qilish: /cancel",
+      { reply_markup: kb([ad ? [btn("🗑 Faol reklamani olib tashlash", "ad:unpin")] : []]) });
   }
 
   // ---------- Xabarlar ----------
@@ -288,6 +344,15 @@ export class Chat extends DurableObject {
     const isPrivate = m.chat.type === "private";
     const isGroup = m.chat.type === "group" || m.chat.type === "supergroup";
     const text = m.text || "";
+    // Muallif reklama postini yuboryapti
+    if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitAd")) && this.isAuthor(m.from)) {
+      await this.st.delete("awaitAd");
+      await this.st.put("adDraft", { fromChat: m.chat.id, msgId: m.message_id });
+      const s = await this.store().userStats();
+      return this.send(`👆 Reklama posti tayyor. <b>${s.users}</b> ta foydalanuvchiga yuboriladi.\n\nQanday tarqatamiz?`, {
+        reply_to_message_id: m.message_id,
+        reply_markup: kb([[btn("📤 Post qilib yuborish", "ad:send")], [btn("📌 Yuborish va tepaga qadash", "ad:pin")], [btn("❌ Bekor qilish", "ad:cancel")]]) });
+    }
     if (text.startsWith("/")) {
       const [head, ...rest] = text.trim().split(/\s+/);
       const [cmd, target] = head.slice(1).split("@");
@@ -300,6 +365,17 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "reklama":
+        case "ad":
+          if (!isPrivate || !this.isAuthor(m.from)) return;
+          await this.st.put("awaitAd", true);
+          return this.adMenu();
+        case "stat":
+        case "stats": {
+          if (!isPrivate || !this.isAuthor(m.from)) return;
+          const s = await this.store().userStats();
+          return this.send(`📊 <b>Bot statistikasi</b>\n\n👥 Foydalanuvchilar: ${s.users}\n🚫 Bloklaganlar: ${s.blocked}\n🎲 Testlar: ${s.quizzes}\n🏁 Yechilgan testlar: ${s.results}`);
+        }
         case "guide":
         case "yoriqnoma":
           return this.sendGuide();
@@ -321,6 +397,7 @@ export class Chat extends DurableObject {
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
         case "cancel":
+          await this.st.delete("awaitAd");
           await this.st.delete("awaitGuide");
           await this.st.delete("create");
           await this.st.delete("edit");
@@ -554,6 +631,31 @@ export class Chat extends DurableObject {
     const i = data.indexOf(":");
     const [kind, val] = i < 0 ? [data, ""] : [data.slice(0, i), data.slice(i + 1)];
     const store = this.store();
+
+    if (kind === "ad") {
+      if (!this.isAuthor(cq.from)) return answer();
+      const caster = this.env.CASTER.get(this.env.CASTER.idFromName("main"));
+      if (val === "cancel") {
+        await this.st.delete("adDraft");
+        await answer("Bekor qilindi");
+        return this.edit(msgId, "❌ Reklama bekor qilindi.");
+      }
+      let job;
+      if (val === "unpin") job = { mode: "unpin" };
+      else {
+        const d = await this.st.get("adDraft");
+        if (!d) return answer("Postni qayta yuboring: /reklama", true);
+        await this.st.delete("adDraft");
+        job = { mode: val === "pin" ? "pin" : "send", fromChat: d.fromChat, msgId: d.msgId };
+      }
+      job.admin = this.chatId;
+      job.statusMsg = msgId;
+      const okStart = await caster.start(job);
+      if (!okStart) return answer("⏳ Oldingi tarqatish hali tugamagan", true);
+      await answer("Boshlandi!");
+      return this.edit(msgId, job.mode === "unpin" ? "🗑 Qadalgan reklama barcha chatlardan olib tashlanmoqda…" :
+        `📣 Reklama tarqatilmoqda${job.mode === "pin" ? " va qadalmoqda" : ""}…\nTugagach xabar beraman.`);
+    }
 
     if (kind === "chk") {
       if (!(await this.isMember(uid))) return answer("❗ Siz hali kanalga a'zo bo'lmadingiz.", true);
@@ -929,6 +1031,70 @@ async function onInline(iq, env) {
     });
   }
   return tg(env, "answerInlineQuery", { inline_query_id: iq.id, results, cache_time: 0, is_personal: true });
+}
+
+// ---------------- Reklama tarqatuvchi (navbat bilan, Telegram limitlariga mos) ----------------
+const BATCH = 25;
+export class Caster extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.env = env;
+    this.st = ctx.storage;
+  }
+  store() {
+    return this.env.STORE.get(this.env.STORE.idFromName("db"));
+  }
+  async start(job) {
+    const cur = await this.st.get("job");
+    if (cur && Date.now() - cur.started < 6 * 3600e3) return false;
+    const store = this.store();
+    // Yangi foydalanuvchilar ham shu reklamani olsin
+    await store.setSetting("ad", job.mode === "unpin" ? "" : JSON.stringify({ fromChat: job.fromChat, msgId: job.msgId, pin: job.mode === "pin" }));
+    await this.st.put("job", { ...job, after: 0, ok: 0, fail: 0, batches: 0, started: Date.now() });
+    await this.st.setAlarm(Date.now() + 200);
+    return true;
+  }
+  async alarm() {
+    const job = await this.st.get("job");
+    if (!job) return;
+    const store = this.store();
+    const users = await store.listUsers(job.after, BATCH);
+    if (!users.length) {
+      await this.st.delete("job");
+      const mins = Math.max(1, Math.round((Date.now() - job.started) / 60000));
+      const text = job.mode === "unpin"
+        ? `✅ Qadalgan reklama ${job.ok} ta chatdan olib tashlandi.`
+        : `✅ <b>Reklama tarqatildi!</b>\n\n📤 Yetib bordi: <b>${job.ok}</b>\n🚫 Yetib bormadi (botni bloklagan): ${job.fail}\n⏱ ${mins} daqiqa` +
+          (job.mode === "pin" ? "\n📌 Barcha chatlarda tepaga qadaldi." : "") +
+          "\n\nYangi foydalanuvchilar ham bu reklamani avtomatik oladi. Olib tashlash: /reklama";
+      return tg(this.env, "sendMessage", { chat_id: job.admin, text, parse_mode: "HTML" });
+    }
+    for (const uid of users) {
+      let r;
+      if (job.mode === "unpin") r = await tg(this.env, "unpinAllChatMessages", { chat_id: uid });
+      else {
+        r = await tg(this.env, "copyMessage", { chat_id: uid, from_chat_id: job.fromChat, message_id: job.msgId });
+        if (r.ok && job.mode === "pin")
+          await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.result.message_id, disable_notification: true });
+      }
+      if (r.ok) job.ok++;
+      else if (r.error_code === 429) {
+        // Telegram "sekinroq" desa — kutib, shu foydalanuvchidan davom etamiz
+        await this.st.put("job", job);
+        return this.st.setAlarm(Date.now() + ((r.parameters?.retry_after || 5) + 1) * 1000);
+      } else {
+        job.fail++;
+        if (r.error_code === 403 || /chat not found|deactivated|blocked/i.test(r.description || "")) await store.markBlocked(uid);
+      }
+      job.after = uid;
+    }
+    job.batches++;
+    if (job.batches % 20 === 0 && job.mode !== "unpin")
+      await tg(this.env, "editMessageText", { chat_id: job.admin, message_id: job.statusMsg,
+        text: `📣 Reklama tarqatilmoqda… ${job.ok + job.fail} ta yuborildi.` });
+    await this.st.put("job", job);
+    await this.st.setAlarm(Date.now() + 1100);
+  }
 }
 
 // ---------------- Kirish nuqtasi ----------------
