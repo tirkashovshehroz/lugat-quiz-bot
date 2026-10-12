@@ -72,23 +72,33 @@ function openCfb(buf) {
 }
 
 const isNumCell = (s) => /^\s*\d+\s*[.)]?\s*$/.test(s);
-// Jadval qatori → "so'z<TAB>tarjima" (raqam ustunlari tashlab yuboriladi)
-// Jadval qatori test savoli bo'lsa: Savol | A | B | C | D | Javob → test qatorlari
+const isLetter = (s) => /^[A-Ja-jА-Га-г]$/.test(s);
+const same = (a, b) => a.toLowerCase().replace(/\s+/g, "") === b.toLowerCase().replace(/\s+/g, "");
+
+// Jadval qatori test savoli bo'lsa: Savol | A | B | C | D | Javob [| Izoh] → test qatorlari
 export function rowLines(cells) {
   let c = cells.map((x) => (x == null ? "" : String(x).replace(/\s+/g, " ").trim())).filter(Boolean);
   let num = 0;
   if (c.length && isNumCell(c[0])) num = parseInt(c.shift(), 10);
+  const asMcq = (q, opts, ans, exp) => [`${num || 1}. ${q}`, ...opts.map((o, i) => `${"ABCDEFGHIJ"[i]}) ${o}`), `Javob: ${ans}`,
+    ...(exp ? [`Izoh: ${exp}`] : [])];
   if (c.length >= 4) {
     const last = c[c.length - 1];
     const opts = c.slice(1, -1);
-    const same = (a, b) => a.toLowerCase().replace(/\s+/g, "") === b.toLowerCase().replace(/\s+/g, "");
-    if (opts.length >= 2 && opts.length <= 10 && (/^[A-Ja-jА-Га-г]$/.test(last) || opts.some((o) => same(o, last)))) {
-      return [`${num || 1}. ${c[0]}`, ...opts.map((o, i) => `${"ABCDEFGHIJ"[i]}) ${o}`), `Javob: ${last}`];
-    }
+    if (opts.length >= 2 && opts.length <= 10 && (isLetter(last) || opts.some((o) => same(o, last))))
+      return asMcq(c[0], opts, last);
+  }
+  // Oxirgi ustun — izoh, undan oldingisi — javob
+  if (c.length >= 5) {
+    const ans = c[c.length - 2];
+    const opts = c.slice(1, -2);
+    if (opts.length >= 2 && opts.length <= 10 && (isLetter(ans) || opts.some((o) => same(o, ans))))
+      return asMcq(c[0], opts, ans, c[c.length - 1]);
   }
   return [rowLine(cells)];
 }
 
+// Jadval qatori → "so'z<TAB>tarjima" (raqam ustunlari tashlab yuboriladi)
 export function rowLine(cells) {
   const c = cells.map((x) => (x == null ? "" : String(x).replace(/\s+/g, " ").trim())).filter((x) => x && !isNumCell(x));
   return c.slice(0, 2).join("\t");
@@ -231,8 +241,7 @@ export function xlsLines(buf) {
   const lines = [];
   for (const sh of sheets) {
     for (const r of [...sh.keys()].sort((a, b) => a - b)) {
-      const cells = sh.get(r);
-      lines.push(...rowLines(cells).filter(Boolean));
+      lines.push(...rowLines(sh.get(r)).filter(Boolean));
     }
   }
   return lines;
