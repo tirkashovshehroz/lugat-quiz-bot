@@ -1611,7 +1611,8 @@ export class Chat extends DurableObject {
           `${medals[i] || i + 1 + "."} ${esc(u.name)} — <b>${u.ok}</b> (${fmtTime(u.t)})`).join("\n");
         text += "\n\n🏆 G'oliblarni tabriklaymiz!";
       }
-      return this.send(text, { reply_markup: kb([[btn("🔁 Yana o'ynash", `run:${s.qid}`)],
+      const ch = channelsOf(this.env).find((c) => c.id === this.env.TESTS_CHANNEL);
+      return this.send(text, { reply_markup: kb([ch ? [{ text: "📢 Yangi testlar kanaliga o'tish", url: ch.link }] : [btn("🔁 Yana o'ynash", `run:${s.qid}`)],
         [{ text: "📚 Botga o'tish", url: `https://t.me/${me}?start=${s.qid}` }]]) });
     }
     const [uid, sc] = Object.entries(s.scores)[0] || [s.starter, { name: "", ok: 0, bad: 0, t: 0 }];
@@ -1637,6 +1638,8 @@ export class Chat extends DurableObject {
       rows.unshift([btn(`🎯 Xatolarni qayta ishlash (${s.wrong.length})`, "retry")]);
     }
     if (shareRow) rows.push(shareRow);
+    const tch = channelsOf(this.env).find((c) => c.id === this.env.TESTS_CHANNEL);
+    if (tch) rows.push([{ text: "📢 Yangi testlar kanali", url: tch.link }]);
     return this.send(text, { reply_markup: kb(rows) });
   }
 }
