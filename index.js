@@ -56,7 +56,7 @@ const HELP =
   "1️⃣ Faylni yuboring (PDF, Word, Excel, .txt)\n" +
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
-  "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing\n\n" +
+  "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
   "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
@@ -272,10 +272,15 @@ export class Store extends DurableObject {
     if (n) this.sql.exec("DELETE FROM results WHERE qid=?", id);
     return n > 0;
   }
-  // Faqat birinchi urinish reytingga yoziladi (QuizBot kabi)
+  // Har bir foydalanuvchining eng yaxshi natijasi saqlanadi (ko'proq to'g'ri, teng bo'lsa — tezroq)
   addResult(qid, uid, name, ok, total, secs) {
-    this.sql.exec("INSERT OR IGNORE INTO results VALUES(?,?,?,?,?,?,?)", qid, uid, name, ok, total, secs, Date.now());
-    return this.placeOf(qid, uid);
+    const before = this.sql.exec("SELECT ok, secs FROM results WHERE qid=? AND uid=?", qid, uid).toArray()[0];
+    this.sql.exec(`INSERT INTO results VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(qid, uid) DO UPDATE SET ok=excluded.ok, total=excluded.total, secs=excluded.secs, name=excluded.name, created=excluded.created
+      WHERE excluded.ok > results.ok OR (excluded.ok = results.ok AND excluded.secs < results.secs)`,
+      qid, uid, name, ok, total, secs, Date.now());
+    const pl = this.placeOf(qid, uid);
+    return pl && { ...pl, improved: !!before && (ok > before.ok || (ok === before.ok && secs < before.secs)), first: !before };
   }
   placeOf(qid, uid) {
     const me = this.sql.exec("SELECT ok,secs FROM results WHERE qid=? AND uid=?", qid, uid).toArray()[0];
@@ -287,7 +292,7 @@ export class Store extends DurableObject {
   takers(qid) {
     return this.sql.exec("SELECT COUNT(*) AS n FROM results WHERE qid=?", qid).toArray()[0].n;
   }
-  top(qid, n = 10) {
+  top(qid, n = 5) {
     return this.sql.exec("SELECT name,ok,total,secs FROM results WHERE qid=? ORDER BY ok DESC, secs ASC LIMIT ?", qid, n).toArray();
   }
   // Foydalanuvchilar (reklama tarqatish uchun)
@@ -897,7 +902,8 @@ export class Chat extends DurableObject {
     const c = await cardContent(this.env, quiz, { owner, takers, author });
     if (!owner && isAdmin) c.reply_markup.inline_keyboard.push(
       [btn("🗑 Admin: o'chirish", `mod:del:${quiz.id}`), btn("🚫 Tuzuvchini bloklash", `mod:ban:${quiz.id}`)]);
-    else if (!owner) c.reply_markup.inline_keyboard.push([btn("⚠️ Shikoyat qilish", `rep:${quiz.id}`)]);
+    else if (!owner && String(quiz.owner) !== String(await this.store().getSetting("authorId")))
+      c.reply_markup.inline_keyboard.push([btn("⚠️ Shikoyat qilish", `rep:${quiz.id}`)]);
     return editId ? this.edit(editId, c.text, { reply_markup: c.reply_markup }) : this.send(c.text, { reply_markup: c.reply_markup });
   }
 
@@ -1150,12 +1156,12 @@ export class Chat extends DurableObject {
       if (!quiz) return answer("Test topilmadi", true);
       if (kind === "stat") {
         await answer();
-        const top = await store.top(id, 10);
+        const top = await store.top(id, 5);
         const takers = await store.takers(id);
         const medals = ["🥇", "🥈", "🥉"];
         const lines = top.map((r, k) => `${medals[k] || k + 1 + "."} ${esc(r.name)} — ${r.ok}/${r.total} (${fmtTime(r.secs)})`);
         return this.edit(msgId, `📊 <b>${esc(quiz.title)}</b>\n\n👥 ${takers} kishi yechgan` +
-          (lines.length ? `\n\n🏆 Eng yaxshi natijalar:\n${lines.join("\n")}` : ""),
+          (lines.length ? `\n\n🏆 Eng yaxshi 5 natija (to'g'ri javoblar, keyin vaqt bo'yicha):\n${lines.join("\n")}` : ""),
           { reply_markup: kb([[btn("⬅️ Orqaga", `open:${id}`)]]) });
       }
       if (quiz.owner !== uid) return answer("Faqat test egasi o'zgartira oladi", true);
@@ -1404,7 +1410,14 @@ export class Chat extends DurableObject {
       `✅ To'g'ri — ${sc.ok}\n❌ Xato — ${sc.bad}\n⌛️ O'tkazilgan — ${missed}\n⏱ ${fmtTime(sc.t)}`;
     if (s.record && s.asked) {
       const pl = await store.addResult(s.qid, +uid, sc.name || "Foydalanuvchi", sc.ok, s.asked, sc.t);
-      if (pl) text += `\n\n🏆 Siz ${pl.total} ishtirokchi ichida <b>${pl.place}-o'rin</b>dasiz.`;
+      if (pl) {
+        text += `\n\n🏆 Siz ${pl.total} ishtirokchi ichida <b>${pl.place}-o'rin</b>dasiz.`;
+        if (pl.improved) text += "\n📈 Yangi rekord! Natijangiz yangilandi.";
+        else if (!pl.first) text += "\n<i>Reytingda eng yaxshi natijangiz saqlanadi.</i>";
+        const top = await store.top(s.qid, 5);
+        const medals = ["🥇", "🥈", "🥉", "4.", "5."];
+        text += "\n\n<b>Eng yaxshi 5 natija:</b>\n" + top.map((r, k) => `${medals[k]} ${esc(r.name)} — ${r.ok}/${r.total} (${fmtTime(r.secs)})`).join("\n");
+      }
     }
     const rows = [[btn("🔁 Qayta urinish", `run:${s.qid}`)]];
     if (s.wrong.length) {
