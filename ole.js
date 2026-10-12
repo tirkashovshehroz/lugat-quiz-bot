@@ -80,6 +80,8 @@ export function rowLines(cells) {
   let c = cells.map((x) => (x == null ? "" : String(x).replace(/\s+/g, " ").trim())).filter(Boolean);
   let num = 0;
   if (c.length && isNumCell(c[0])) num = parseInt(c.shift(), 10);
+  // Sarlavha qatori ("Savol | A | B | C | D | Javob") — savol emas
+  if (c.some((x, i) => x.toUpperCase() === "A" && (c[i + 1] || "").toUpperCase() === "B")) return [rowLine(cells)];
   const asMcq = (q, opts, ans, exp) => [`${num || 1}. ${q}`, ...opts.map((o, i) => `${"ABCDEFGHIJ"[i]}) ${o}`), `Javob: ${ans}`,
     ...(exp ? [`Izoh: ${exp}`] : [])];
   if (c.length >= 4) {

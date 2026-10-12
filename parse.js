@@ -1,10 +1,12 @@
-// Lug'at fayllarini o'qish: .pdf .txt .csv .tsv .docx .xlsx va oddiy matn (tashqi kutubxonasiz)
+// Fayllarni o'qish: .pdf .doc .docx .xls .xlsx .txt .csv va oddiy matn (tashqi kutubxonasiz)
+// Natija: lug'at juftliklari (pairs), bo'limlar, test savollari (mcq) va Word ichidagi rasmlar (images).
 import { pdfToLines } from "./pdf.js";
 import { docLines, xlsLines, rowLines } from "./ole.js";
 import { parseMcq } from "./mcq.js";
 
 const SEPS = ["\t", " — ", " – ", " - ", " = ", " : ", "—", "–", "=", ";", "|", ":", " -", "- ", "-", ","];
 const NUM = /^\s*\d+\s*[.)]\s*/;
+const IMG = /⟦IMG\d+⟧/g;
 
 export function splitLine(line) {
   line = line.trim().replace(NUM, "");
@@ -31,19 +33,6 @@ function dedupe(pairs) {
     }
   }
   return out;
-}
-
-function fromRows(rows) {
-  const pairs = [];
-  for (const row of rows) {
-    const cells = row.map((c) => (c == null ? "" : String(c).trim())).filter(Boolean);
-    if (cells.length >= 2) pairs.push([cells[0].replace(NUM, ""), cells[1]]);
-    else if (cells.length === 1) {
-      const p = splitLine(cells[0]);
-      if (p) pairs.push(p);
-    }
-  }
-  return pairs;
 }
 
 export function parseText(text) {
@@ -73,7 +62,7 @@ function tidy(s) {
 }
 
 export function parseLines(rawLines) {
-  const lines = rawLines.map((l) => l.replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean);
+  const lines = rawLines.map((l) => l.replace(IMG, "").replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean);
   const sepLines = lines.filter((l) => splitLine(l));
   const numbered = sepLines.length > 0 && sepLines.filter((l) => NUMBERED.test(l)).length >= sepLines.length * 0.6;
   let title = null;
@@ -131,6 +120,7 @@ async function inflate(data) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+// Kerakli fayllarni xom baytlar ko'rinishida qaytaradi
 async function unzip(buf, want) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   let eocd = -1;
@@ -156,10 +146,11 @@ async function unzip(buf, want) {
     const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
     const raw = buf.subarray(start, start + csize);
     const data = method === 0 ? raw : method === 8 ? await inflate(raw) : null;
-    if (data) files[name] = dec.decode(data);
+    if (data) files[name] = data;
   }
   return files;
 }
+const txt = (u8) => (u8 ? new TextDecoder().decode(u8) : "");
 
 const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 function unxml(s) {
@@ -169,19 +160,25 @@ function unxml(s) {
   });
 }
 
-function docxText(xml) {
+// Word paragrafi matni; ichidagi rasmlar ⟦IMGn⟧ belgisi bilan qo'shiladi
+function docxText(xml, img) {
   xml = xml.replace(/<w:tab\/>/g, "<w:t>\t</w:t>");
-  return unxml([...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join(""));
+  let t = unxml([...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join(""));
+  if (img) for (const m of xml.matchAll(/(?:r:embed|r:id)="(rId\d+)"/g)) {
+    const n = img(m[1]);
+    if (n != null) t += ` ⟦IMG${n}⟧`;
+  }
+  return t;
 }
 
-// Hujjat tartibida: paragraflar → qatorlar, jadval qatorlari → "so'z<TAB>tarjima"
-function docxLines(xml) {
+// Hujjat tartibida: paragraflar → qatorlar, jadval qatorlari → "so'z<TAB>tarjima" yoki test savoli
+function docxLines(xml, img) {
   const out = [];
   for (const m of xml.matchAll(/<w:tbl>[\s\S]*?<\/w:tbl>|<w:p[\s>][\s\S]*?<\/w:p>/g)) {
     if (m[0].startsWith("<w:tbl>")) {
       for (const r of m[0].matchAll(/<w:tr[\s>][\s\S]*?<\/w:tr>/g))
-        out.push(...rowLines([...r[0].matchAll(/<w:tc[\s>][\s\S]*?<\/w:tc>/g)].map((c) => docxText(c[0]))));
-    } else out.push(docxText(m[0]));
+        out.push(...rowLines([...r[0].matchAll(/<w:tc[\s>][\s\S]*?<\/w:tc>/g)].map((c) => docxText(c[0], img))));
+    } else out.push(docxText(m[0], img));
   }
   return out;
 }
@@ -195,7 +192,7 @@ function colIndex(ref) {
 
 function xlsxLines(files) {
   const shared = [];
-  const ss = files["xl/sharedStrings.xml"];
+  const ss = txt(files["xl/sharedStrings.xml"]);
   if (ss) {
     for (const si of ss.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
       shared.push(unxml([...si[1].matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/g)].map((m) => m[1]).join("")));
@@ -205,7 +202,7 @@ function xlsxLines(files) {
   const sheets = Object.keys(files).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
   for (const name of sheets) {
     const rows = [];
-    for (const r of files[name].matchAll(/<row[\s>][\s\S]*?<\/row>/g)) {
+    for (const r of txt(files[name]).matchAll(/<row[\s>][\s\S]*?<\/row>/g)) {
       const row = [];
       for (const c of r[0].matchAll(/<c\s([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
         const attrs = c[1];
@@ -228,17 +225,36 @@ function xlsxLines(files) {
 }
 
 // Lug'at va test savollarini birga tahlil qilish
-function analyze(lines) {
+function analyze(lines, images = []) {
   const res = parseLines(lines);
   res.mcq = parseMcq(lines);
+  res.images = images;
   return res;
 }
+
+const IMG_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp" };
 
 export async function parseFile(filename, bytes) {
   const name = filename.toLowerCase();
   if (name.endsWith(".docx")) {
-    const f = await unzip(bytes, (n) => n === "word/document.xml");
-    return analyze(docxLines(f["word/document.xml"] || ""));
+    const f = await unzip(bytes, (n) => n === "word/document.xml" || n === "word/_rels/document.xml.rels" || n.startsWith("word/media/"));
+    // Rasmlar: rId → word/media/... → tartib raqami
+    const rels = {};
+    for (const m of txt(f["word/_rels/document.xml.rels"]).matchAll(/<Relationship\b[^>]*>/g)) {
+      const id = m[0].match(/Id="([^"]+)"/)?.[1], target = m[0].match(/Target="([^"]+)"/)?.[1];
+      if (id && target && /\/image"/.test(m[0])) rels[id] = "word/" + target.replace(/^\.?\//, "").replace(/^word\//, "");
+    }
+    const images = [];
+    const byPath = {};
+    const img = (rid) => {
+      const path = rels[rid];
+      if (!path || !f[path]) return null;
+      const ext = path.split(".").pop().toLowerCase();
+      if (!IMG_TYPES[ext]) return null; // .emf/.wmf kabi formatlarni Telegram qabul qilmaydi
+      if (byPath[path] == null) { byPath[path] = images.length; images.push({ name: path.split("/").pop(), type: IMG_TYPES[ext], bytes: f[path] }); }
+      return byPath[path];
+    };
+    return analyze(docxLines(txt(f["word/document.xml"]), img), images);
   }
   if (name.endsWith(".xlsx") || name.endsWith(".xlsm")) {
     const f = await unzip(bytes, (n) => n === "xl/sharedStrings.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(n));

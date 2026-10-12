@@ -18,6 +18,10 @@ const BTN_GUIDE = "📖 Yo'riqnoma";
 const BTN_AD = "📣 Reklama berish";
 const BTN_CAT = "🗂 Muallif testlari";
 const BTN_SET = "⚙️ Sozlamalar";
+const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yoki .txt faylni yuboring yoki matnni xabar qilib yozing.\n" +
+  "Savol ostiga <code>Izoh: ...</code> yozsangiz — javobdan keyin tushuntirish chiqadi. Word ichidagi rasmlar savolga o'zi biriktiriladi.\n\n" +
+  "✍️ <b>2-usul — QuizBot kabi, bittalab:</b> 📎 → <b>So'rovnoma</b> → <b>Viktorina</b> rejimini yoqing, to'g'ri javobni belgilang (izoh ham yozish mumkin) va shu yerga yuboring.\n" +
+  "🖼 Rasmli savol uchun avval rasmni yuboring, keyin viktorinani.";
 const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
 const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
   [{ text: BTN_AD }, { text: BTN_SET }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
@@ -70,6 +74,36 @@ async function tg(env, method, body) {
   if (!j.ok) console.log("TG xato", method, j.description);
   return j;
 }
+
+// Word fayldagi rasmlarni Telegram'ga yuklab, file_id olish (10 tadan albom qilib, so'ng o'chiriladi)
+async function uploadImages(env, chatId, images) {
+  const ids = [];
+  const toDelete = [];
+  for (let i = 0; i < images.length; i += 10) {
+    const part = images.slice(i, i + 10);
+    const fd = new FormData();
+    fd.append("chat_id", String(chatId));
+    fd.append("disable_notification", "true");
+    if (part.length === 1) {
+      fd.append("photo", new Blob([part[0].bytes], { type: part[0].type }), part[0].name);
+      const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendPhoto`, { method: "POST", body: fd });
+      const j = await r.json().catch(() => ({ ok: false }));
+      if (j.ok) { toDelete.push(j.result.message_id); ids.push(j.result.photo.at(-1).file_id); } else ids.push(null);
+      continue;
+    }
+    fd.append("media", JSON.stringify(part.map((_, k) => ({ type: "photo", media: `attach://f${k}` }))));
+    part.forEach((im, k) => fd.append(`f${k}`, new Blob([im.bytes], { type: im.type }), im.name));
+    const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMediaGroup`, { method: "POST", body: fd });
+    const j = await r.json().catch(() => ({ ok: false }));
+    if (!j.ok) { console.log("Rasm yuklash xatosi", j.description); part.forEach(() => ids.push(null)); continue; }
+    for (const m of j.result) { toDelete.push(m.message_id); ids.push(m.photo?.at(-1)?.file_id || null); }
+  }
+  for (let i = 0; i < toDelete.length; i += 100)
+    await tg(env, "deleteMessages", { chat_id: chatId, message_ids: toDelete.slice(i, i + 100) });
+  return ids;
+}
+const photoId = (m) => m.photo?.at(-1)?.file_id || null;
+const EXP_MAX = 200; // Telegram viktorina izohi chegarasi
 
 let BOT_USERNAME = null;
 async function botName(env) {
@@ -133,7 +167,7 @@ export function badWord(texts) {
 }
 function quizTexts(q) {
   const out = [q.title, q.description];
-  for (const x of q.questions || []) out.push(x.q, ...(x.opts || []));
+  for (const x of q.questions || []) out.push(x.q, x.exp, ...(x.opts || []));
   return out;
 }
 
@@ -148,7 +182,7 @@ export function buildQuestions(pairs, count, direction) {
     const others = [...new Set(pool.map((p) => p.slice(0, 100)))].filter((p) => p.toLowerCase() !== a.toLowerCase());
     if (!others.length) continue;
     const opts = shuffle([...sample(others, 3), a]);
-    out.push({ q: q.slice(0, 280), opts, correct: opts.indexOf(a), pair: [word, tr] });
+    out.push({ q: q.slice(0, 280), opts, correct: opts.indexOf(a), pair: [word, tr], exp: `${word} — ${tr}`.slice(0, EXP_MAX) });
   }
   return out;
 }
@@ -254,6 +288,19 @@ export class Store extends DurableObject {
   }
   bans() {
     return this.sql.exec("SELECT * FROM bans ORDER BY created DESC LIMIT 50").toArray();
+  }
+  // Bitta savolga rasm yoki izoh qo'shish/olib tashlash
+  updateQuestion(id, owner, idx, patch) {
+    const r = this.sql.exec("SELECT questions FROM quizzes WHERE id=? AND owner=?", id, owner).toArray()[0];
+    if (!r?.questions) return false;
+    const qs = JSON.parse(r.questions);
+    if (!qs[idx]) return false;
+    for (const [k, v] of Object.entries(patch)) {
+      if (v == null || v === "") delete qs[idx][k];
+      else qs[idx][k] = v;
+    }
+    this.sql.exec("UPDATE quizzes SET questions=? WHERE id=?", JSON.stringify(qs), id);
+    return true;
   }
   setPublic(id, v) {
     this.sql.exec("UPDATE quizzes SET public=? WHERE id=?", v ? 1 : 0, id);
@@ -373,6 +420,10 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   let text = `🎲 <b>${esc(quiz.title)}</b>\n`;
   if (quiz.description) text += `<i>${esc(quiz.description)}</i>\n`;
   text += `\n🖊 ${n} ta savol\n⏱ Har bir savolga ${timerLabel(quiz.timer)}\n🔀 ${SHUFFLE[quiz.shuffle || "all"]}`;
+  const imgs = (quiz.questions || []).filter((q) => q.img).length;
+  const exps = (quiz.questions || []).filter((q) => q.exp).length;
+  if (imgs) text += `\n🖼 ${imgs} ta rasmli savol`;
+  if (exps) text += `\n💬 ${exps === n ? "Har bir savolda izoh bor" : `${exps} ta savolda izoh bor`}`;
   if (takers != null) text += `\n👥 ${takers} kishi yechgan`;
   if (author) text += quiz.public ? "\n🌐 Hammaga ko'rinadi («Muallif testlari» va kanalda)" : "\n🔒 Faqat sizga ko'rinadi";
   text += `\n\n🔗 https://t.me/${me}?start=${quiz.id}`;
@@ -631,7 +682,7 @@ export class Chat extends DurableObject {
           if (!isPrivate) return;
           await this.st.delete("create");
           await this.st.delete("edit");
-          return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
+          return this.send(NEWQUIZ_TEXT);
         case "ban":
         case "unban":
         case "bans": {
@@ -662,6 +713,7 @@ export class Chat extends DurableObject {
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
         case "cancel":
+          await this.st.delete("manual");
           await this.st.delete("awaitAd");
           await this.st.delete("awaitGuide");
           await this.st.delete("create");
@@ -681,11 +733,13 @@ export class Chat extends DurableObject {
       return this.sendGuide();
     }
     if (m.document) return this.onFile(m.document);
+    if (m.poll) return this.onQuizPoll(m.poll);
+    if (m.photo) return this.onPhoto(m);
     // Pastki tugmalar
     if (text === BTN_NEW) {
       await this.st.delete("create");
       await this.st.delete("edit");
-      return this.send("📄 Test tuzish uchun faylni yuboring (PDF, Word, Excel, .txt) yoki matnni xabar qilib yozing.");
+      return this.send(NEWQUIZ_TEXT);
     }
     if (text === BTN_MY) return this.myTests(m.from.id);
     if (text === BTN_CAT) return this.catalog(0);
@@ -726,6 +780,41 @@ export class Chat extends DurableObject {
     return this.send("📄 Test tuzish uchun faylni yuboring yoki /newquiz buyrug'ini bosing.");
   }
 
+  // ---------- QuizBot usuli: viktorinalarni bittalab yuborish ----------
+  manualKb(n) {
+    return kb([[btn(`✅ Tayyor — testni yakunlash (${n})`, "man:done")], [btn("↩️ Oxirgisini o'chirish", "man:undo"), btn("❌ Bekor qilish", "man:cancel")]]);
+  }
+  async onQuizPoll(poll) {
+    if (poll.type !== "quiz")
+      return this.send("❗ So'rovnomani <b>«Viktorina»</b> (Quiz) rejimida yarating va to'g'ri javobni belgilang.");
+    if (poll.correct_option_id == null)
+      return this.send("❗ To'g'ri javob ko'rinmadi. Viktorinani boshqa joydan forward qilmang — shu chatning o'zida 📎 → So'rovnoma orqali yarating.");
+    const man = (await this.st.get("manual")) || { questions: [], pendingImg: null };
+    const q = { q: poll.question.slice(0, 280), opts: poll.options.map((o) => o.text.slice(0, 100)), correct: poll.correct_option_id };
+    if (poll.explanation) q.exp = poll.explanation.slice(0, EXP_MAX);
+    if (man.pendingImg) { q.img = man.pendingImg; man.pendingImg = null; }
+    man.questions.push(q);
+    await this.st.put("manual", man);
+    const n = man.questions.length;
+    return this.send(`✅ ${n}-savol qo'shildi${q.img ? " 🖼" : ""}${q.exp ? " 💬" : ""}.\n\nYana viktorina yuboring (rasmli savol uchun avval rasmni) yoki testni yakunlang.`,
+      { reply_markup: this.manualKb(n) });
+  }
+  async onPhoto(m) {
+    const fid = photoId(m);
+    const ed = await this.st.get("edit");
+    if (ed?.field === "qimg") {
+      await this.st.delete("edit");
+      await this.store().updateQuestion(ed.id, m.from.id, ed.idx, { img: fid });
+      await this.send("✅ Rasm savolga biriktirildi.");
+      return this.questionView(ed.id, ed.idx, m.from.id);
+    }
+    const man = (await this.st.get("manual")) || { questions: [], pendingImg: null };
+    man.pendingImg = fid;
+    await this.st.put("manual", man);
+    return this.send("🖼 Rasm qabul qilindi — u <b>keyingi yuboradigan viktorinangizga</b> biriktiriladi.\n" +
+      "Endi 📎 → So'rovnoma → <b>Viktorina</b> rejimida savolni yarating va yuboring.");
+  }
+
   async onFile(doc) {
     if (doc.file_size > MAX_FILE) return this.send("❗ Fayl 20 MB dan katta. Darslarni alohida fayl qilib yuboring.");
     const name = doc.file_name || "lugat.txt";
@@ -741,6 +830,17 @@ export class Chat extends DurableObject {
           : "❗ Fayldan so'z yoki test savoli topilmadi. Boshqa fayl yuborib ko'ring.");
       }
       await this.st.delete("edit");
+      // Word ichidagi rasmlarni Telegram'ga yuklab, savollarga biriktiramiz
+      const used = [...new Set(parsed.mcq.questions.map((q) => q.imgIdx).filter((x) => x != null))].slice(0, 100);
+      if (used.length) {
+        await this.send(`🖼 ${used.length} ta rasm topildi, yuklanmoqda…`);
+        const ids = await uploadImages(this.env, this.chatId, used.map((i) => parsed.images[i]));
+        const map = new Map(used.map((i, k) => [i, ids[k]]));
+        for (const q of parsed.mcq.questions) {
+          if (q.imgIdx != null && map.get(q.imgIdx)) q.img = map.get(q.imgIdx);
+          delete q.imgIdx;
+        }
+      }
       return this.beginCreate(parsed, name.replace(/\.[^.]+$/, "").replace(/_/g, " "));
     } catch (e) {
       console.log("Fayl xatosi", e);
@@ -755,6 +855,9 @@ export class Chat extends DurableObject {
     if (mcq && mcq.questions.length >= 2 && mcq.questions.length >= parsed.pairs.length / 3) {
       const title = (mcq.title || fallbackTitle).slice(0, 60);
       let head = `📄 <b>${esc(title)}</b>\n✅ ${mcq.questions.length} ta test savoli topildi (variantlari va to'g'ri javoblari bilan).`;
+      const ni = mcq.questions.filter((q) => q.img).length, ne = mcq.questions.filter((q) => q.exp).length;
+      if (ni) head += `\n🖼 Rasmli savollar: ${ni}`;
+      if (ne) head += `\n💬 Izohli savollar: ${ne}`;
       if (mcq.missing) head += `\n⚠️ ${mcq.missing} ta savolda to'g'ri javob ko'rsatilmagan — ular qo'shilmadi.`;
       return this.askCount(mcq.questions, title, undefined, { mcq: true, head });
     }
@@ -825,7 +928,8 @@ export class Chat extends DurableObject {
       // Tayyor savollar: kerakli sonini tanlab, asl tartibini saqlaymiz
       const idx = sample([...create.pairs.keys()], create.count).sort((a, b) => a - b);
       questions = idx.map((i) => create.pairs[i]).map((q) => ({ q: q.q, opts: q.opts.map((o) => o || "—"), correct: q.correct,
-        pair: [q.q.length > 80 ? q.q.slice(0, 77) + "…" : q.q, q.opts[q.correct]] }));
+        pair: [q.q.length > 80 ? q.q.slice(0, 77) + "…" : q.q, q.opts[q.correct]],
+        ...(q.img ? { img: q.img } : {}), ...(q.exp ? { exp: q.exp.slice(0, EXP_MAX) } : {}) }));
       pairs = [];
       direction = "mcq";
     } else questions = buildQuestions(create.pairs, create.count, direction);
@@ -923,13 +1027,57 @@ export class Chat extends DurableObject {
     const reply_markup = kb([
       [btn("✏️ Nomi", `ef:title:${quiz.id}`), btn("📝 Tavsif", `ef:desc:${quiz.id}`)],
       [btn("⏱ Vaqt", `ef:timer:${quiz.id}`), btn("🔀 Aralashtirish", `ef:shuf:${quiz.id}`)],
+      [btn("🖼 Savollarga rasm va izoh", `qe:${quiz.id}:0`)],
       [btn("🗑 O'chirish", `del:${quiz.id}`)],
       [btn("⬅️ Orqaga", `open:${quiz.id}`)],
     ]);
     return this.edit(msgId, text, { reply_markup });
   }
 
+  async questionList(quiz, page, msgId) {
+    const qs = quiz.questions || [];
+    const per = 8, pages = Math.max(1, Math.ceil(qs.length / per));
+    page = Math.min(Math.max(0, page), pages - 1);
+    const rows = qs.slice(page * per, page * per + per).map((q, k) => {
+      const i = page * per + k;
+      const icons = (q.img ? "🖼" : "") + (q.exp ? "💬" : "");
+      return [btn(`${i + 1}. ${icons ? icons + " " : ""}${q.q}`.slice(0, 60), `qs:${quiz.id}:${i}`)];
+    });
+    const nav = [];
+    if (page > 0) nav.push(btn("⬅️", `qe:${quiz.id}:${page - 1}`));
+    if (page < pages - 1) nav.push(btn("➡️", `qe:${quiz.id}:${page + 1}`));
+    rows.push(nav, [btn("⬅️ Orqaga", `edit:${quiz.id}`)]);
+    const text = `🖼 <b>Rasm va izohlar</b> — ${esc(quiz.title)}${pages > 1 ? ` (${page + 1}/${pages})` : ""}\n\n` +
+      "Savolni tanlang. 🖼 — rasmi bor, 💬 — izohi bor.\nIzoh javob berilgandan keyin 💡 belgisi ostida ko'rinadi.";
+    return msgId ? this.edit(msgId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async questionView(id, idx, uid, msgId) {
+    const quiz = await this.store().getQuiz(id);
+    const q = quiz?.questions?.[idx];
+    if (!q || quiz.owner !== uid) return this.send("❗ Savol topilmadi.");
+    const L = "ABCDEFGHIJ";
+    const text = `<b>${idx + 1}-savol:</b> ${esc(q.q)}\n\n` + q.opts.map((o, k) => `${k === q.correct ? "✅" : "▫️"} ${L[k]}) ${esc(o)}`).join("\n") +
+      `\n\n🖼 Rasm: ${q.img ? "bor" : "yo'q"}\n💬 Izoh: ${q.exp ? esc(q.exp) : "yo'q"}`;
+    const rows = [[btn(q.img ? "🖼 Rasmni almashtirish" : "🖼 Rasm qo'shish", `qa:img:${id}:${idx}`),
+      btn(q.exp ? "💬 Izohni o'zgartirish" : "💬 Izoh yozish", `qa:exp:${id}:${idx}`)]];
+    const rm = [];
+    if (q.img) rm.push(btn("👁 Rasmni ko'rish", `qa:see:${id}:${idx}`), btn("🗑 Rasm", `qa:rmimg:${id}:${idx}`));
+    if (q.exp) rm.push(btn("🗑 Izoh", `qa:rmexp:${id}:${idx}`));
+    rows.push(rm, [btn("⬅️ Savollar ro'yxati", `qe:${id}:${Math.floor(idx / 8)}`)]);
+    return msgId ? this.edit(msgId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+
   async onEditText(ed, text, uid, from = { id: uid }) {
+    if (ed.field === "qimg") return this.send("🖼 Rasm yuboring (rasm sifatida, fayl emas) yoki /cancel");
+    if (ed.field === "qexp") {
+      const v = text.trim();
+      if (v.length > EXP_MAX) return this.send(`❗ Izoh ${EXP_MAX} belgidan oshmasin (hozir ${v.length}). Qisqaroq yozing.`);
+      if (!this.isAuthor(from) && badWord([v])) return this.send("❗ Bu matnda bot qoidalariga to'g'ri kelmaydigan so'z bor. Boshqacha yozing.");
+      await this.st.delete("edit");
+      await this.store().updateQuestion(ed.id, uid, ed.idx, { exp: v === "-" ? null : v });
+      await this.send("✅ Izoh saqlandi.");
+      return this.questionView(ed.id, ed.idx, uid);
+    }
     await this.st.delete("edit");
     const field = ed.field === "title" ? "title" : "description";
     const value = text.trim() === "/skip" || text.trim() === "-" ? "" : text.trim().slice(0, field === "title" ? 100 : 300);
@@ -1150,6 +1298,61 @@ export class Chat extends DurableObject {
       if (!quiz) return this.send("❗ Test topilmadi.");
       return this.showCard(quiz, uid, cq.message.text?.startsWith("✏️") || cq.message.text?.startsWith("📊") ? msgId : undefined);
     }
+    if (kind === "man") {
+      const man = await this.st.get("manual");
+      if (val === "cancel") {
+        await this.st.delete("manual");
+        await answer("Bekor qilindi");
+        return this.edit(msgId, "❌ Savollar bekor qilindi.");
+      }
+      if (!man?.questions?.length) return answer("Avval viktorina yuboring", true);
+      if (val === "undo") {
+        man.questions.pop();
+        await this.st.put("manual", man);
+        await answer("Oxirgi savol o'chirildi");
+        return this.edit(msgId, `↩️ Oxirgi savol o'chirildi. Hozir ${man.questions.length} ta savol.`, { reply_markup: this.manualKb(man.questions.length) });
+      }
+      if (val === "done") {
+        await this.st.delete("manual");
+        await answer();
+        const d = new Date(Date.now() + 5 * 3600e3);
+        const title = `Test ${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+        return this.askTitle({ pairs: man.questions, title, mcq: true, count: man.questions.length }, msgId);
+      }
+      return answer();
+    }
+
+    if (kind === "qe" || kind === "qs" || kind === "qa") {
+      const parts = val.split(":");
+      const act = kind === "qa" ? parts.shift() : null;
+      const [id, n] = parts;
+      const quiz = await store.getQuiz(id);
+      if (!quiz) return answer("Test topilmadi", true);
+      if (quiz.owner !== uid) return answer("Faqat test egasi o'zgartira oladi", true);
+      await answer();
+      if (kind === "qe") return this.questionList(quiz, parseInt(n, 10) || 0, msgId);
+      const idx = parseInt(n, 10) || 0;
+      if (kind === "qs") return this.questionView(id, idx, uid, msgId);
+      if (act === "img") {
+        await this.st.put("edit", { id, field: "qimg", idx });
+        return this.send(`🖼 ${idx + 1}-savol uchun rasmni yuboring.\nBekor qilish: /cancel`);
+      }
+      if (act === "exp") {
+        await this.st.put("edit", { id, field: "qexp", idx });
+        return this.send(`💬 ${idx + 1}-savol uchun izoh yozing (${EXP_MAX} belgigacha).\nIzoh o'quvchi javob bergandan keyin ko'rinadi.\nBekor qilish: /cancel`);
+      }
+      if (act === "see") {
+        const q = quiz.questions?.[idx];
+        if (q?.img) await tg(this.env, "sendPhoto", { chat_id: this.chatId, photo: q.img, caption: `${idx + 1}-savol rasmi` });
+        return;
+      }
+      if (act === "rmimg" || act === "rmexp") {
+        await store.updateQuestion(id, uid, idx, act === "rmimg" ? { img: null } : { exp: null });
+        return this.questionView(id, idx, uid, msgId);
+      }
+      return;
+    }
+
     if (["edit", "ef", "et", "es", "del", "delok", "stat"].includes(kind)) {
       const id = val.split(":").pop();
       const quiz = await store.getQuiz(id);
@@ -1326,7 +1529,13 @@ export class Chat extends DurableObject {
     const q = sess.questions[sess.idx];
     const num = `[${sess.idx + 1}/${sess.questions.length}]`;
     let question = `${num} ${q.q}`;
-    if (question.length > 300) {
+    const long = question.length > 300;
+    if (q.img) {
+      // Rasmli savol: avval rasm (uzun savol matni izohida), keyin viktorina — QuizBot kabi
+      const ph = await tg(this.env, "sendPhoto", { chat_id: this.chatId, photo: q.img,
+        ...(long ? { caption: `<b>${num}</b> ${esc(q.q)}`.slice(0, 1024), parse_mode: "HTML" } : {}) });
+      if (long) question = ph.ok ? `${num} ⬆️ Rasmdagi savolga javob bering` : question.slice(0, 297) + "…";
+    } else if (long) {
       // Uzun savol: matnini alohida xabar qilib, so'rovnomada qisqa yozamiz
       await this.send(`<b>${num}</b> ${esc(q.q)}`);
       question = `${num} ⬆️ Yuqoridagi savolga javob bering`;
@@ -1334,6 +1543,7 @@ export class Chat extends DurableObject {
     const body = { chat_id: this.chatId, question,
       options: q.opts.map((o) => ({ text: o.length > 100 ? o.slice(0, 99) + "…" : o })),
       type: "quiz", correct_option_id: q.correct, is_anonymous: false };
+    if (q.exp) body.explanation = q.exp.slice(0, EXP_MAX);
     if (sess.timer) body.open_period = sess.timer;
     const r = await tg(this.env, "sendPoll", body);
     if (!r.ok) {

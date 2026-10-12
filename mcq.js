@@ -1,8 +1,10 @@
-// Tayyor test savollarini o'qish (har qanday fan): savol, A) B) C) D) variantlar va to'g'ri javob.
+// Tayyor test savollarini o'qish (har qanday fan): savol, A) B) C) D) variantlar, to'g'ri javob, izoh va rasm.
 // To'g'ri javob quyidagi usullardan biri bilan topiladi:
 //   "Javob: B" / "Javob: B) Samarqand" / "To'g'ri javob: Samarqand" / "Answer: B" / "Ответ: Б"
 //   variant oldida yoki oxirida belgi: "*B) ...", "+B) ...", "B) ... *", "B) ... ✓"
-//   oxirida javoblar kaliti: "1-A 2-B 3-C" yoki "1.A, 2.B, 3.C"
+//   oxirida javoblar kaliti: "1-A 2-B 3-C" yoki "Javoblar: 1.A, 2.B"
+// Izoh: "Izoh: ..." / "Tushuntirish: ..." / "Explanation: ..." — javobdan keyin ko'rsatiladi.
+// Rasm: Word faylidagi rasm o'zi joylashgan savolga biriktiriladi (⟦IMGn⟧ belgisi orqali).
 
 const LAT = "ABCDEFGHIJ";
 const CYR = "АБВГДЕЖЗИК";
@@ -15,8 +17,11 @@ const letterIndex = (ch) => {
 const Q_START = /^\s*(?:(\d{1,4})\s*[.)]\s*|(\d{1,4})\s*-\s*savol\s*[.:)]?\s*|savol\s*(\d{1,4})?\s*[.:)]\s*|(?:question|вопрос|soru)\s*(\d{1,4})?\s*[.:)]\s*)(.+)$/i;
 const OPT = /^\s*([*+#✓✔]\s*)?([A-Ja-jА-Ка-к])\s*[).:]\s*(.*)$/;
 const ANS = /^\s*(?:to['‘’`ʻ]?g['‘’`ʻ]?ri\s+javob(?:i)?|javob(?:i)?|answer|correct(?:\s+answer)?|ответ|правильный\s+ответ|cevap|doğru\s+cevap|kalit)\s*[:\-–—=]\s*(.*)$/i;
+const EXP = /^\s*(?:izoh|izohi|tushuntirish|sharh|explanation|explain|пояснение|объяснение|izah|açıklama)\s*[:\-–—=]\s*(.*)$/i;
+const EXP_INLINE = /\s*[.;,]?\s*(?:izoh|tushuntirish|explanation|пояснение|açıklama)\s*[:\-–—]\s*(.*)$/i;
 const KEY_PAIR = /(\d{1,4})\s*[-.)–:]\s*([A-Ja-jА-Га-г])(?![\p{L}])/gu;
 const MARK = /\s*(\*|\+|✓|✔|\(to['‘’`ʻ]?g['‘’`ʻ]?ri\))\s*$/i;
+const IMG = /⟦IMG(\d+)⟧/g;
 
 const norm = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
@@ -79,11 +84,25 @@ export function parseMcq(rawLines) {
   const questions = [];
   let title = null;
   let cur = null;
-  let last = null; // "q" yoki variant indeksi
+  let last = null; // "q", variant indeksi, "ans" yoki "exp"
+  let pendingImg = null; // savoldan oldin turgan rasm
   const keys = new Map();
   const close = () => { if (cur) questions.push(cur); cur = null; last = null; };
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    // Rasm belgilarini ajratib olamiz
+    const imgs = [...rawLine.matchAll(IMG)].map((m) => +m[1]);
+    const line = rawLine.replace(IMG, " ").replace(/\s+/g, " ").trim();
+    if (!line) {
+      for (const n of imgs) {
+        // Savol boshlanib, hali variant yo'q bo'lsa — shu savolniki; aks holda keyingi savolniki
+        if (cur && !cur.opts.length && cur.img == null) cur.img = n;
+        else pendingImg = n;
+      }
+      continue;
+    }
+    const attach = () => { for (const n of imgs) { if (cur && cur.img == null) cur.img = n; else pendingImg = n; } };
+
     // Javoblar kaliti qatori: "1-A 2-B 3-C ..."
     const kp = [...line.matchAll(KEY_PAIR)];
     const keyHead = /^\s*(javoblar|kalitlar|kalit|answers?\s*key|answers|ответы|cevaplar)\b\s*[:\-–—]?\s*/i;
@@ -95,11 +114,21 @@ export function parseMcq(rawLines) {
       for (const k of kp) keys.set(+k[1], k[2]);
       continue;
     }
+    const exp = line.match(EXP);
+    if (exp && cur) { cur.exp = exp[1].trim(); last = "exp"; attach(); continue; }
     const ans = line.match(ANS);
-    if (ans && cur) { cur.answerRaw = ans[1]; last = "ans"; continue; }
+    if (ans && cur) {
+      let raw = ans[1];
+      const ie = raw.match(EXP_INLINE);
+      if (ie) { cur.exp = ie[1].trim(); raw = raw.slice(0, ie.index); }
+      cur.answerRaw = raw;
+      last = ie ? "exp" : "ans";
+      attach();
+      continue;
+    }
 
     const opt = line.match(OPT);
-    if (opt && cur && last !== "ans") {
+    if (opt && cur && last !== "ans" && last !== "exp") {
       const idx = letterIndex(opt[2]);
       if (idx === cur.opts.length) {
         let text = opt[3].trim();
@@ -108,6 +137,7 @@ export function parseMcq(rawLines) {
         cur.opts.push(text);
         if (marked) cur.marked = idx;
         last = idx;
+        attach();
         continue;
       }
     }
@@ -115,14 +145,18 @@ export function parseMcq(rawLines) {
     if (qs && !(cur && cur.opts.length === 0 && last === "q" && !cur.text)) {
       close();
       const num = +(qs[1] || qs[2] || qs[3] || qs[4] || 0);
-      cur = { num, text: qs[5].trim(), opts: [], marked: -1, answerRaw: null };
+      cur = { num, text: qs[5].trim(), opts: [], marked: -1, answerRaw: null, exp: "", img: pendingImg };
+      pendingImg = null;
       last = "q";
+      attach();
       continue;
     }
     // Davom etayotgan qator
-    if (!cur) { if (!title && !questions.length) title = line; continue; }
+    if (!cur) { if (!title && !questions.length) title = line; attach(); continue; }
     if (last === "q") cur.text += " " + line;
+    else if (last === "exp") cur.exp += " " + line;
     else if (typeof last === "number") cur.opts[last] += " " + line;
+    attach();
   }
   close();
 
@@ -134,7 +168,10 @@ export function parseMcq(rawLines) {
     if (correct < 0 && q.answerRaw) correct = resolveAnswer(q, q.answerRaw);
     if (correct < 0 && keys.has(q.num)) correct = letterIndex(keys.get(q.num));
     if (correct < 0 || correct >= q.opts.length) { missing++; continue; }
-    out.push({ q: q.text.trim(), opts: q.opts.map((o) => o.trim()), correct });
+    const item = { q: q.text.trim(), opts: q.opts.map((o) => o.trim()), correct };
+    if (q.exp && q.exp.trim()) item.exp = q.exp.trim();
+    if (q.img != null) item.imgIdx = q.img;
+    out.push(item);
   }
   if (title) title = title.replace(/\(\s*\d+\s*ta\s+savol\s*\)/i, "").replace(/\s+/g, " ").trim() || null;
   return { questions: out, missing, title };
