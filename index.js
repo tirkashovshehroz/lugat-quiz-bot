@@ -2,6 +2,7 @@
 // QuizBot kabi ishlaydi, lekin savollar fayldan avtomatik tuziladi.
 import { DurableObject } from "cloudflare:workers";
 import { parseFile, parseText } from "./parse.js";
+import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
 const MAX_FILE = 20 * 1024 * 1024;
 const MAX_QUESTIONS = 300;
@@ -37,6 +38,7 @@ const USER_COMMANDS = [
   { command: "reklama", description: "📣 Botga reklama berish" },
   { command: "author", description: "Muallif bilan bog'lanish" },
   { command: "settings", description: "⚙️ Sozlamalar" },
+  { command: "lang", description: "🌐 Til / Language" },
   { command: "stop", description: "Testni to'xtatish" },
   { command: "cancel", description: "Bekor qilish" },
 ];
@@ -61,7 +63,7 @@ const HELP =
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
-  "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
+  "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/lang — til\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
 async function tg(env, method, body) {
@@ -447,11 +449,39 @@ export class Chat extends DurableObject {
   store() {
     return this.env.STORE.get(this.env.STORE.idFromName("db"));
   }
+  // Joriy chat tiliga tarjima qilib yuborish (boshqa chatlarga — o'zgarishsiz)
+  tgx(method, body) {
+    if (this.lang && this.lang !== "uz" && (method === "answerCallbackQuery" || String(body.chat_id) === String(this.chatId))) {
+      body = { ...body };
+      if (body.text) body.text = tr(this.lang, body.text);
+      if (body.caption) body.caption = tr(this.lang, body.caption);
+      if (body.reply_markup) body.reply_markup = trMarkup(this.lang, body.reply_markup);
+    }
+    return tg(this.env, method, body);
+  }
+  T(s) {
+    return tr(this.lang, s);
+  }
+  async loadLang(from) {
+    this.lang = (await this.st.get("lang")) || (await this.st.get("langAuto"));
+    if (!this.lang && from) {
+      // Telegram tilidan avtomatik aniqlaymiz (keyin /lang bilan o'zgartirish mumkin)
+      this.lang = detectLang(from.language_code);
+      await this.st.put("langAuto", this.lang);
+    }
+    this.lang ||= "uz";
+  }
+  langPicker(editId) {
+    const text = "🌐 Tilni tanlang / Выберите язык / Choose your language / Dil seçin";
+    const reply_markup = kb(Object.entries(LANGS).map(([k, v]) => [btn(v, `lang:${k}`)]));
+    return editId ? tg(this.env, "editMessageText", { chat_id: this.chatId, message_id: editId, text, reply_markup })
+      : tg(this.env, "sendMessage", { chat_id: this.chatId, text, reply_markup });
+  }
   send(text, extra = {}) {
-    return tg(this.env, "sendMessage", { chat_id: this.chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
+    return this.tgx("sendMessage", { chat_id: this.chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
   }
   edit(msgId, text, extra = {}) {
-    return tg(this.env, "editMessageText", { chat_id: this.chatId, message_id: msgId, text, parse_mode: "HTML",
+    return this.tgx("editMessageText", { chat_id: this.chatId, message_id: msgId, text, parse_mode: "HTML",
       disable_web_page_preview: true, ...extra });
   }
 
@@ -462,7 +492,7 @@ export class Chat extends DurableObject {
     const until = await this.st.get("m:" + uid);
     if (until && until > Date.now()) return true;
     for (const ch of chans) {
-      const r = await tg(this.env, "getChatMember", { chat_id: ch.id, user_id: uid });
+      const r = await this.tgx("getChatMember", { chat_id: ch.id, user_id: uid });
       if (!r.ok) continue; // bot kanalda admin bo'lmasa — bu kanal tekshirilmaydi (loglarda xato ko'rinadi)
       const s = r.result.status;
       const ok = ["creator", "administrator", "member"].includes(s) || (s === "restricted" && r.result.is_member);
@@ -479,6 +509,20 @@ export class Chat extends DurableObject {
       { reply_markup: kb([...joinRows(this.env), [btn("✅ Tekshirish", "chk")]]) });
   }
 
+  async onLangPick(cq) {
+    const code = cq.data.slice(5);
+    if (!LANGS[code]) return tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id });
+    await this.st.put("lang", code);
+    this.lang = code;
+    await this.tgx("answerCallbackQuery", { callback_query_id: cq.id, text: "✅ Til o'zgartirildi." });
+    await this.edit(cq.message.message_id, `✅ Til o'zgartirildi. ${LANGS[code]}`);
+    if (cq.message.chat.type !== "private") return;
+    const pending = await this.st.get("langStart");
+    await this.st.delete("langStart");
+    if (pending) return this.openQuiz(pending, cq.from, "private");
+    return this.sendHelp();
+  }
+
   sendHelp() {
     return this.send(HELP + `\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`, { reply_markup: MAIN_KB });
   }
@@ -489,7 +533,7 @@ export class Chat extends DurableObject {
   async sendGuide() {
     const fid = await this.store().getSetting("guide");
     if (!fid) return this.send("📖 Yo'riqnoma hali yuklanmagan. Savollar bo'lsa, muallifga yozing: /author");
-    return tg(this.env, "sendDocument", { chat_id: this.chatId, document: fid,
+    return this.tgx("sendDocument", { chat_id: this.chatId, document: fid,
       caption: "📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>\n\nSavollar bo'lsa " + esc(authorOf(this.env)) + " bilan bog'laning.", parse_mode: "HTML" });
   }
   sendAuthor() {
@@ -502,6 +546,7 @@ export class Chat extends DurableObject {
   async setBanned(v, chatId) {
     this.chatId = chatId;
     await this.st.put("chatId", chatId);
+    await this.loadLang();
     if (v) {
       await this.st.put("banned", true);
       for (const k of ["sess", "create", "edit", "retry"]) await this.st.delete(k);
@@ -518,8 +563,10 @@ export class Chat extends DurableObject {
     const cq = update.callback_query;
     const isPrivate = (m?.chat || cq?.message?.chat)?.type === "private";
     const uid = (m || cq)?.from?.id;
+    await this.loadLang((m || cq)?.from);
+    if (cq?.data?.startsWith("lang:")) return this.onLangPick(cq);
     if (isPrivate && (await this.st.get("banned"))) {
-      if (cq) await tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id, text: "🚫 Siz botdan bloklangansiz", show_alert: true });
+      if (cq) await this.tgx("answerCallbackQuery", { callback_query_id: cq.id, text: "🚫 Siz botdan bloklangansiz", show_alert: true });
       else if (((await this.st.get("bannedNote")) || 0) < Date.now()) {
         await this.st.put("bannedNote", Date.now() + 3600e3);
         await this.send(`🚫 Siz botdan bloklangansiz. E'tirozingiz bo'lsa: ${esc(authorOf(this.env))}`);
@@ -534,14 +581,14 @@ export class Chat extends DurableObject {
     }
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
     if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds2"))) {
-      await tg(this.env, "setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
+      await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
       await this.store().setSetting("authorId", String(uid));
       await this.st.put("adminCmds2", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
       if (arg) await this.st.put("pendingStart", arg);
-      if (cq) await tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id });
+      if (cq) await this.tgx("answerCallbackQuery", { callback_query_id: cq.id });
       await this.joinPrompt();
       if (isNew) await this.sendActiveAds(uid);
       return;
@@ -557,7 +604,7 @@ export class Chat extends DurableObject {
     for (const ad of await store.activeAds()) {
       const r = await copyAd(this.env, this.chatId, ad);
       if (!r.ok) continue;
-      if (ad.pin && r.msgs[0]) await tg(this.env, "pinChatMessage", { chat_id: this.chatId, message_id: r.msgs[0], disable_notification: true });
+      if (ad.pin && r.msgs[0]) await this.tgx("pinChatMessage", { chat_id: this.chatId, message_id: r.msgs[0], disable_notification: true });
       await store.addDeliveries(ad.id, [[uid, r.msgs]]);
     }
   }
@@ -572,7 +619,7 @@ export class Chat extends DurableObject {
     const sample = (quiz.questions || []).slice(0, 3).map((q, i) => `${i + 1}. ${esc(q.q.slice(0, 120))}`).join("\n");
     const text = `${header}\n\n🎲 <b>${esc(quiz.title)}</b>\n${quiz.description ? `<i>${esc(quiz.description)}</i>\n` : ""}` +
       `👤 Tuzuvchi: <a href="tg://user?id=${quiz.owner}">${quiz.owner}</a>\n${extra}\n<b>Namuna savollar:</b>\n${sample || "—"}`;
-    return tg(this.env, "sendMessage", { chat_id: admin, text, parse_mode: "HTML", reply_markup: kb([
+    return this.tgx("sendMessage", { chat_id: admin, text, parse_mode: "HTML", reply_markup: kb([
       [btn("✅ Ruxsat berish", `mod:ok:${quiz.id}`), btn("🗑 O'chirish", `mod:del:${quiz.id}`)],
       [btn("🚫 Bloklash va testlarini o'chirish", `mod:ban:${quiz.id}`)],
       [btn("👁 Testni ko'rish", `open:${quiz.id}`)]]) });
@@ -582,17 +629,17 @@ export class Chat extends DurableObject {
     await store.ban(uid, name, reason);
     const res = await store.deleteUserData(uid);
     if (this.env.TESTS_CHANNEL)
-      for (const mid of res.posts) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
+      for (const mid of res.posts) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
     await this.env.CHAT.get(this.env.CHAT.idFromName(String(uid))).setBanned(true, uid);
     return res;
   }
 
   settingsMenu(editId) {
-    const text = "⚙️ <b>Sozlamalar</b>\n\n" +
+    const text = "⚙️ <b>Sozlamalar</b>\n\n" + "🌐 <b>Til</b> — bot interfeysi tili.\n\n" +
       "🗑 <b>Ma'lumotlarimni o'chirish</b> — botdagi barcha testlaringiz, natijalaringiz va reytingdagi o'rningiz butunlay o'chiriladi.\n\n" +
       "⚠️ <b>Telegram akkauntni o'chirish</b> — Telegram'ning rasmiy sahifasi ochiladi. U yerda telefon raqamingiz bilan kirib, " +
       "akkauntni o'chirishni o'zingiz tasdiqlaysiz. <b>Diqqat:</b> akkaunt o'chirilsa, barcha chatlar, kontaktlar va kanallar qaytarib bo'lmaydigan tarzda yo'qoladi!";
-    const reply_markup = kb([[btn("🗑 Ma'lumotlarimni o'chirish", "deldata")], [{ text: "⚠️ Telegram akkauntni o'chirish", url: TG_DELETE_URL }]]);
+    const reply_markup = kb([[btn("🌐 Til", "langmenu")], [btn("🗑 Ma'lumotlarimni o'chirish", "deldata")], [{ text: "⚠️ Telegram akkauntni o'chirish", url: TG_DELETE_URL }]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
   }
 
@@ -622,7 +669,7 @@ export class Chat extends DurableObject {
   async onMessage(m) {
     const isPrivate = m.chat.type === "private";
     const isGroup = m.chat.type === "group" || m.chat.type === "supergroup";
-    const text = m.text || "";
+    const text = fromButton(m.text || "");
     // Albomning keyingi rasmlari — mavjud qoralamaga qo'shamiz
     if (isPrivate && m.media_group_id && this.isAuthor(m.from)) {
       const d = await this.st.get("adDraft");
@@ -650,8 +697,16 @@ export class Chat extends DurableObject {
       const arg = rest.join(" ");
       switch (cmd.toLowerCase()) {
         case "start":
+          if (isPrivate && !(await this.st.get("lang"))) {
+            if (arg) await this.st.put("langStart", arg);
+            return this.langPicker();
+          }
           if (arg) return this.openQuiz(arg, m.from, m.chat.type);
           return isPrivate ? this.sendHelp() : target ? this.send(HELP) : null;
+        case "lang":
+        case "til":
+        case "language":
+          return this.langPicker();
         case "author":
         case "muallif":
           return this.sendAuthor();
@@ -819,7 +874,7 @@ export class Chat extends DurableObject {
     if (doc.file_size > MAX_FILE) return this.send("❗ Fayl 20 MB dan katta. Darslarni alohida fayl qilib yuboring.");
     const name = doc.file_name || "lugat.txt";
     try {
-      const f = await tg(this.env, "getFile", { file_id: doc.file_id });
+      const f = await this.tgx("getFile", { file_id: doc.file_id });
       const r = await fetch(`https://api.telegram.org/file/bot${this.env.BOT_TOKEN}/${f.result.file_path}`);
       // Fayl faqat xotirada o'qiladi va hech qayerga saqlanmaydi
       const parsed = await parseFile(name, new Uint8Array(await r.arrayBuffer()));
@@ -982,7 +1037,7 @@ export class Chat extends DurableObject {
     let text = `🎲 <b>${esc(quiz.title)}</b>\n`;
     if (quiz.description) text += `<i>${esc(quiz.description)}</i>\n`;
     text += `\n🖊 ${n} ta savol\n⏱ Har bir savolga ${timerLabel(quiz.timer)}\n${who}`;
-    const r = await tg(this.env, "sendMessage", { chat_id: ch, text, parse_mode: "HTML",
+    const r = await this.tgx("sendMessage", { chat_id: ch, text, parse_mode: "HTML",
       reply_markup: kb([[{ text: "▶️ Testni boshlash", url: `https://t.me/${me}?start=${quiz.id}` }],
         [{ text: "👥 Guruhda boshlash", url: `https://t.me/${me}?startgroup=${quiz.id}` }]]) });
     if (r.ok) await this.store().setChanMsg(quiz.id, r.result.message_id);
@@ -1097,7 +1152,7 @@ export class Chat extends DurableObject {
     const msgId = cq.message.message_id;
     const uid = cq.from.id;
     const answer = (text, alert = false) =>
-      tg(this.env, "answerCallbackQuery", { callback_query_id: cq.id, text, show_alert: alert });
+      this.tgx("answerCallbackQuery", { callback_query_id: cq.id, text, show_alert: alert });
     const i = data.indexOf(":");
     const [kind, val] = i < 0 ? [data, ""] : [data.slice(0, i), data.slice(i + 1)];
     const store = this.store();
@@ -1174,14 +1229,14 @@ export class Chat extends DurableObject {
       if (act === "ok") {
         await store.setStatus(quiz.id, "ok");
         await answer("✅ Ruxsat berildi");
-        await tg(this.env, "sendMessage", { chat_id: quiz.owner, text: `✅ «${esc(quiz.title)}» testingiz tekshiruvdan o'tdi. Endi uni ishlatishingiz mumkin: /mytests`, parse_mode: "HTML" });
+        await this.tgx("sendMessage", { chat_id: quiz.owner, text: `✅ «${esc(quiz.title)}» testingiz tekshiruvdan o'tdi. Endi uni ishlatishingiz mumkin: /mytests`, parse_mode: "HTML" });
         if (quiz.status === "pending") await this.postToChannel(quiz, { id: quiz.owner, first_name: "obunachi" });
         return this.edit(msgId, `✅ «${esc(quiz.title)}» — ruxsat berildi.`);
       }
       if (act === "del") {
         const post = await store.adminDeleteQuiz(quiz.id);
-        if (post && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: post });
-        await tg(this.env, "sendMessage", { chat_id: quiz.owner, text: `🗑 «${esc(quiz.title)}» testingiz bot qoidalariga zid bo'lgani uchun o'chirildi.`, parse_mode: "HTML" });
+        if (post && this.env.TESTS_CHANNEL) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: post });
+        await this.tgx("sendMessage", { chat_id: quiz.owner, text: `🗑 «${esc(quiz.title)}» testingiz bot qoidalariga zid bo'lgani uchun o'chirildi.`, parse_mode: "HTML" });
         await answer("🗑 O'chirildi");
         return this.edit(msgId, `🗑 «${esc(quiz.title)}» — o'chirildi.`);
       }
@@ -1194,12 +1249,14 @@ export class Chat extends DurableObject {
       return answer();
     }
 
+    if (kind === "langmenu") { await answer(); return this.langPicker(msgId); }
+
     if (kind === "deldata") {
       await answer();
       if (val === "ok") {
         const res = await store.deleteUserData(uid);
         if (this.env.TESTS_CHANNEL)
-          for (const mid of res.posts) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
+          for (const mid of res.posts) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
         for (const k of ["sess", "create", "edit", "retry", "reg", "awaitAd", "adDraft", "awaitGuide", "pendingStart"]) await this.st.delete(k);
         return this.edit(msgId, `✅ Ma'lumotlaringiz o'chirildi.\n🎲 O'chirilgan testlar: ${res.quizzes}\n\nBotdan yana foydalanishingiz mumkin — /start`);
       }
@@ -1218,7 +1275,7 @@ export class Chat extends DurableObject {
         await this.postToChannel(quiz, cq.from);
         await answer("🌐 Endi hammaga ko'rinadi va kanalga joylandi");
       } else {
-        if (quiz.chanMsg && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+        if (quiz.chanMsg && this.env.TESTS_CHANNEL) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
         await store.setChanMsg(quiz.id, null);
         await answer("🔒 Obunachilardan yashirildi");
       }
@@ -1343,7 +1400,7 @@ export class Chat extends DurableObject {
       }
       if (act === "see") {
         const q = quiz.questions?.[idx];
-        if (q?.img) await tg(this.env, "sendPhoto", { chat_id: this.chatId, photo: q.img, caption: `${idx + 1}-savol rasmi` });
+        if (q?.img) await this.tgx("sendPhoto", { chat_id: this.chatId, photo: q.img, caption: `${idx + 1}-savol rasmi` });
         return;
       }
       if (act === "rmimg" || act === "rmexp") {
@@ -1391,7 +1448,7 @@ export class Chat extends DurableObject {
           { reply_markup: kb([[btn("Ha, o'chirish", `delok:${id}`), btn("Yo'q", `edit:${id}`)]]) });
       }
       if (kind === "delok") {
-        if (quiz.chanMsg && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+        if (quiz.chanMsg && this.env.TESTS_CHANNEL) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
         await store.deleteQuiz(id, uid);
         return this.edit(msgId, "🗑 Test o'chirildi.");
       }
@@ -1476,7 +1533,7 @@ export class Chat extends DurableObject {
     if (s.ready.length >= MIN_READY) return this.launch(s, answer);
     await this.st.put("sess", s);
     await answer("✅ Tayyor!");
-    return tg(this.env, "editMessageReplyMarkup", { chat_id: this.chatId, message_id: s.readyMsg,
+    return this.tgx("editMessageReplyMarkup", { chat_id: this.chatId, message_id: s.readyMsg,
       reply_markup: kb([[btn(`✅ Tayyorman! (${s.ready.length}/${MIN_READY})`, "go")], [btn("▶️ Hozir boshlash", "now")]]) });
   }
 
@@ -1484,7 +1541,7 @@ export class Chat extends DurableObject {
     const s = await this.st.get("sess");
     if (!s || s.phase !== "ready") return answer();
     if (cq.from.id !== s.starter) {
-      const m = await tg(this.env, "getChatMember", { chat_id: this.chatId, user_id: cq.from.id });
+      const m = await this.tgx("getChatMember", { chat_id: this.chatId, user_id: cq.from.id });
       if (!["administrator", "creator"].includes(m.result?.status))
         return answer("Faqat testni boshlagan kishi yoki admin bosishi mumkin", true);
     }
@@ -1502,6 +1559,7 @@ export class Chat extends DurableObject {
   // Taymer: joriy savolni yopadi va keyingisini yuboradi
   async alarm() {
     this.chatId = await this.st.get("chatId");
+    await this.loadLang();
     const sess = await this.st.get("sess");
     if (!sess || sess.phase !== "run") return;
     if (sess.cur) {
@@ -1532,20 +1590,20 @@ export class Chat extends DurableObject {
     const long = question.length > 300;
     if (q.img) {
       // Rasmli savol: avval rasm (uzun savol matni izohida), keyin viktorina — QuizBot kabi
-      const ph = await tg(this.env, "sendPhoto", { chat_id: this.chatId, photo: q.img,
+      const ph = await this.tgx("sendPhoto", { chat_id: this.chatId, photo: q.img,
         ...(long ? { caption: `<b>${num}</b> ${esc(q.q)}`.slice(0, 1024), parse_mode: "HTML" } : {}) });
-      if (long) question = ph.ok ? `${num} ⬆️ Rasmdagi savolga javob bering` : question.slice(0, 297) + "…";
+      if (long) question = ph.ok ? `${num} ${this.T("⬆️ Rasmdagi savolga javob bering")}` : question.slice(0, 297) + "…";
     } else if (long) {
       // Uzun savol: matnini alohida xabar qilib, so'rovnomada qisqa yozamiz
       await this.send(`<b>${num}</b> ${esc(q.q)}`);
-      question = `${num} ⬆️ Yuqoridagi savolga javob bering`;
+      question = `${num} ${this.T("⬆️ Yuqoridagi savolga javob bering")}`;
     }
     const body = { chat_id: this.chatId, question,
       options: q.opts.map((o) => ({ text: o.length > 100 ? o.slice(0, 99) + "…" : o })),
       type: "quiz", correct_option_id: q.correct, is_anonymous: false };
     if (q.exp) body.explanation = q.exp.slice(0, EXP_MAX);
     if (sess.timer) body.open_period = sess.timer;
-    const r = await tg(this.env, "sendPoll", body);
+    const r = await this.tgx("sendPoll", body);
     if (!r.ok) {
       await this.st.delete("sess");
       return this.send("⚠️ Xatolik yuz berdi, test to'xtatildi.");
@@ -1576,10 +1634,11 @@ export class Chat extends DurableObject {
 
   async stop(userId) {
     this.chatId ??= await this.st.get("chatId");
+    if (!this.lang) await this.loadLang();
     const sess = await this.st.get("sess");
     if (!sess) return this.send("Hozir test ketmayapti.");
     if (sess.isGroup && userId !== sess.starter) {
-      const m = await tg(this.env, "getChatMember", { chat_id: this.chatId, user_id: userId });
+      const m = await this.tgx("getChatMember", { chat_id: this.chatId, user_id: userId });
       if (!["administrator", "creator"].includes(m.result?.status))
         return this.send("Faqat testni boshlagan kishi yoki admin to'xtata oladi.");
     }
@@ -1661,6 +1720,7 @@ async function onInline(iq, env) {
   if (one) quizzes = [one];
   else quizzes = await store.searchQuizzes(iq.from.id, q);
   const me = await botName(env);
+  const lang = detectLang(iq.from.language_code);
   const results = [];
   for (const z of quizzes.slice(0, 20)) {
     const n = z.questions?.length || z.count;
@@ -1668,10 +1728,10 @@ async function onInline(iq, env) {
     if (z.description) text += `<i>${esc(z.description)}</i>\n`;
     text += `\n🖊 ${n} ta savol\n⏱ Har bir savolga ${timerLabel(z.timer)}`;
     results.push({
-      type: "article", id: z.id, title: z.title, description: `${n} ta savol · ${timerLabel(z.timer)}`,
-      input_message_content: { message_text: text, parse_mode: "HTML" },
-      reply_markup: kb([[{ text: "▶️ Testni boshlash", url: `https://t.me/${me}?start=${z.id}` }],
-        [{ text: "👥 Guruhda boshlash", url: `https://t.me/${me}?startgroup=${z.id}` }]]),
+      type: "article", id: z.id, title: z.title, description: tr(lang, `${n} ta savol · ${timerLabel(z.timer)}`),
+      input_message_content: { message_text: tr(lang, text), parse_mode: "HTML" },
+      reply_markup: trMarkup(lang, kb([[{ text: "▶️ Testni boshlash", url: `https://t.me/${me}?start=${z.id}` }],
+        [{ text: "👥 Guruhda boshlash", url: `https://t.me/${me}?startgroup=${z.id}` }]])),
     });
   }
   return tg(env, "answerInlineQuery", { inline_query_id: iq.id, results, cache_time: 0, is_personal: true });
@@ -1824,6 +1884,7 @@ export default {
         drop_pending_updates: true,
       });
       await tg(env, "setMyCommands", { commands: USER_COMMANDS });
+      for (const lc of ["ru", "en", "tr"]) await tg(env, "setMyCommands", { commands: trCommands(lc, USER_COMMANDS), language_code: lc });
       let msg = r.ok ? "✅ Bot ulandi! Endi Telegramda botingizga /start yozing." : "❌ Xato: " + r.description;
       const me = (await tg(env, "getMe", {})).result;
       for (const ch of channelsOf(env)) {

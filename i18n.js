@@ -1,0 +1,359 @@
+// Interfeys tarjimalari: o'zbekcha (asosiy) → русский, English, Türkçe.
+// Bot matnlari o'zbekcha yoziladi, foydalanuvchiga yuborishdan oldin shu yerda tarjima qilinadi.
+// Test mazmuni (savollar, variantlar, nomlar) tarjima qilinmaydi.
+
+export const LANGS = { uz: "🇺🇿 O'zbekcha", ru: "🇷🇺 Русский", en: "🇬🇧 English", tr: "🇹🇷 Türkçe" };
+const IDX = { ru: 0, en: 1, tr: 2 };
+
+// Telegram tilidan boshlang'ich tilni aniqlash
+export function detectLang(code) {
+  code = (code || "").toLowerCase().split("-")[0];
+  if (code === "uz") return "uz";
+  if (["ru", "uk", "be", "kk", "ky", "tg"].includes(code)) return "ru";
+  if (["tr", "az", "tk"].includes(code)) return "tr";
+  return code ? "en" : "uz";
+}
+
+// ---- Faqat to'liq mos kelganda (tugmalar, qisqa javoblar) ----
+const EXACT = {
+  "So'z → tarjima": ["Слово → перевод", "Word → translation", "Kelime → çeviri"],
+  "Tarjima → so'z": ["Перевод → слово", "Translation → word", "Çeviri → kelime"],
+  "Aralash": ["Смешанно", "Mixed", "Karışık"],
+  "Hammasi aralashtiriladi": ["Перемешивать всё", "Shuffle everything", "Hepsi karıştırılır"],
+  "Aralashtirilmaydi": ["Без перемешивания", "No shuffle", "Karıştırılmaz"],
+  "Faqat savollar": ["Только вопросы", "Questions only", "Sadece sorular"],
+  "Faqat javoblar": ["Только ответы", "Answers only", "Sadece cevaplar"],
+  "➕ Yangi test": ["➕ Новый тест", "➕ New quiz", "➕ Yeni test"],
+  "📚 Testlarim": ["📚 Мои тесты", "📚 My quizzes", "📚 Testlerim"],
+  "👨‍🏫 Muallif": ["👨‍🏫 Автор", "👨‍🏫 Author", "👨‍🏫 Yazar"],
+  "📖 Yo'riqnoma": ["📖 Инструкция", "📖 Guide", "📖 Kılavuz"],
+  "📣 Reklama berish": ["📣 Реклама", "📣 Advertise", "📣 Reklam ver"],
+  "🗂 Muallif testlari": ["🗂 Тесты автора", "🗂 Author's quizzes", "🗂 Yazarın testleri"],
+  "⚙️ Sozlamalar": ["⚙️ Настройки", "⚙️ Settings", "⚙️ Ayarlar"],
+  "🌐 Til": ["🌐 Язык", "🌐 Language", "🌐 Dil"],
+  "✅ Tekshirish": ["✅ Проверить", "✅ Check", "✅ Kontrol et"],
+  "▶️ Testni boshlash": ["▶️ Начать тест", "▶️ Start quiz", "▶️ Testi başlat"],
+  "👥 Guruhda boshlash": ["👥 Начать в группе", "👥 Start in a group", "👥 Grupta başlat"],
+  "🔗 Testni ulashish": ["🔗 Поделиться тестом", "🔗 Share quiz", "🔗 Testi paylaş"],
+  "✏️ Tahrirlash": ["✏️ Изменить", "✏️ Edit", "✏️ Düzenle"],
+  "📊 Statistika": ["📊 Статистика", "📊 Statistics", "📊 İstatistik"],
+  "🔒 Hammadan yashirish": ["🔒 Скрыть от всех", "🔒 Hide from everyone", "🔒 Herkesten gizle"],
+  "🌐 Hammaga ko'rsatish": ["🌐 Показать всем", "🌐 Show to everyone", "🌐 Herkese göster"],
+  "✉️ Muallifga yozish": ["✉️ Написать автору", "✉️ Message the author", "✉️ Yazara yaz"],
+  "🗑 Ma'lumotlarimni o'chirish": ["🗑 Удалить мои данные", "🗑 Delete my data", "🗑 Verilerimi sil"],
+  "⚠️ Telegram akkauntni o'chirish": ["⚠️ Удалить аккаунт Telegram", "⚠️ Delete Telegram account", "⚠️ Telegram hesabını sil"],
+  "✉️ Murojaat qilish": ["✉️ Связаться", "✉️ Contact", "✉️ İletişime geç"],
+  "✏️ Boshqa son": ["✏️ Другое число", "✏️ Other number", "✏️ Başka sayı"],
+  "✅ Shu nom qolsin": ["✅ Оставить название", "✅ Keep this title", "✅ Bu ad kalsın"],
+  "⏭ O'tkazib yuborish": ["⏭ Пропустить", "⏭ Skip", "⏭ Atla"],
+  "⬅️ Oldingi": ["⬅️ Назад", "⬅️ Previous", "⬅️ Önceki"],
+  "Keyingi ➡️": ["Далее ➡️", "Next ➡️", "Sonraki ➡️"],
+  "✏️ Nomi": ["✏️ Название", "✏️ Title", "✏️ Ad"],
+  "📝 Tavsif": ["📝 Описание", "📝 Description", "📝 Açıklama"],
+  "⏱ Vaqt": ["⏱ Время", "⏱ Time", "⏱ Süre"],
+  "🔀 Aralashtirish": ["🔀 Перемешивание", "🔀 Shuffle", "🔀 Karıştırma"],
+  "🖼 Savollarga rasm va izoh": ["🖼 Картинки и пояснения", "🖼 Images & explanations", "🖼 Resim ve açıklamalar"],
+  "🗑 O'chirish": ["🗑 Удалить", "🗑 Delete", "🗑 Sil"],
+  "⬅️ Orqaga": ["⬅️ Назад", "⬅️ Back", "⬅️ Geri"],
+  "🖼 Rasmni almashtirish": ["🖼 Заменить картинку", "🖼 Replace image", "🖼 Resmi değiştir"],
+  "🖼 Rasm qo'shish": ["🖼 Добавить картинку", "🖼 Add image", "🖼 Resim ekle"],
+  "💬 Izohni o'zgartirish": ["💬 Изменить пояснение", "💬 Edit explanation", "💬 Açıklamayı değiştir"],
+  "💬 Izoh yozish": ["💬 Добавить пояснение", "💬 Add explanation", "💬 Açıklama ekle"],
+  "👁 Rasmni ko'rish": ["👁 Посмотреть", "👁 View image", "👁 Resmi gör"],
+  "🗑 Rasm": ["🗑 Картинка", "🗑 Image", "🗑 Resim"],
+  "🗑 Izoh": ["🗑 Пояснение", "🗑 Explanation", "🗑 Açıklama"],
+  "⬅️ Savollar ro'yxati": ["⬅️ К списку вопросов", "⬅️ Question list", "⬅️ Soru listesi"],
+  "↩️ Oxirgisini o'chirish": ["↩️ Удалить последний", "↩️ Undo last", "↩️ Sonuncuyu sil"],
+  "❌ Bekor qilish": ["❌ Отмена", "❌ Cancel", "❌ İptal"],
+  "Ha, o'chirish": ["Да, удалить", "Yes, delete", "Evet, sil"],
+  "Yo'q": ["Нет", "No", "Hayır"],
+  "⚠️ Shikoyat qilish": ["⚠️ Пожаловаться", "⚠️ Report", "⚠️ Şikayet et"],
+  "✅ Tayyorman!": ["✅ Я готов!", "✅ I'm ready!", "✅ Hazırım!"],
+  "▶️ Hozir boshlash": ["▶️ Начать сейчас", "▶️ Start now", "▶️ Şimdi başlat"],
+  "▶️ Davom etish": ["▶️ Продолжить", "▶️ Continue", "▶️ Devam et"],
+  "🔗 Ulashish": ["🔗 Поделиться", "🔗 Share", "🔗 Paylaş"],
+  "📢 Yangi testlar kanaliga o'tish": ["📢 Канал новых тестов", "📢 New quizzes channel", "📢 Yeni testler kanalı"],
+  "📢 Yangi testlar kanali": ["📢 Канал новых тестов", "📢 New quizzes channel", "📢 Yeni testler kanalı"],
+  "📚 Botga o'tish": ["📚 Открыть бота", "📚 Open the bot", "📚 Bota git"],
+  "🔁 Qayta urinish": ["🔁 Ещё раз", "🔁 Try again", "🔁 Tekrar dene"],
+  "🔁 Yana o'ynash": ["🔁 Сыграть ещё", "🔁 Play again", "🔁 Tekrar oyna"],
+  "🗑 Admin: o'chirish": ["🗑 Админ: удалить", "🗑 Admin: delete", "🗑 Yönetici: sil"],
+  "🚫 Tuzuvchini bloklash": ["🚫 Заблокировать автора", "🚫 Block the creator", "🚫 Oluşturanı engelle"],
+  "Faylni qayta yuboring": ["Отправьте файл заново", "Send the file again", "Dosyayı tekrar gönderin"],
+  "Test yaratildi!": ["Тест создан!", "Quiz created!", "Test oluşturuldu!"],
+  "Bekor qilindi": ["Отменено", "Cancelled", "İptal edildi"],
+  "Avval viktorina yuboring": ["Сначала отправьте викторину", "Send a quiz poll first", "Önce bir test anketi gönderin"],
+  "Oxirgi savol o'chirildi": ["Последний вопрос удалён", "Last question removed", "Son soru silindi"],
+  "Test topilmadi": ["Тест не найден", "Quiz not found", "Test bulunamadı"],
+  "Faqat test egasi o'zgartira oladi": ["Изменять может только автор теста", "Only the quiz owner can edit it", "Sadece test sahibi düzenleyebilir"],
+  "Test o'chirilgan": ["Тест удалён", "This quiz was deleted", "Test silinmiş"],
+  "⏳ Test tekshiruvda": ["⏳ Тест на проверке", "⏳ Quiz is under review", "⏳ Test incelemede"],
+  "Ma'lumot eskirgan": ["Данные устарели", "This data has expired", "Veri eskidi"],
+  "Davom etamiz!": ["Продолжаем!", "Let's continue!", "Devam ediyoruz!"],
+  "Siz allaqachon tayyorsiz ✅": ["Вы уже готовы ✅", "You're already ready ✅", "Zaten hazırsınız ✅"],
+  "✅ Tayyor!": ["✅ Готово!", "✅ Ready!", "✅ Hazır!"],
+  "Faqat testni boshlagan kishi yoki admin bosishi mumkin": ["Нажать может только тот, кто начал тест, или админ", "Only the person who started the quiz or an admin can press this", "Sadece testi başlatan kişi veya yönetici basabilir"],
+  "Boshladik!": ["Начинаем!", "Let's go!", "Başlıyoruz!"],
+  "Siz bu test haqida allaqachon xabar bergansiz": ["Вы уже пожаловались на этот тест", "You have already reported this quiz", "Bu testi zaten bildirdiniz"],
+  "✅ Rahmat! Shikoyatingiz muallifga yuborildi.": ["✅ Спасибо! Жалоба отправлена автору.", "✅ Thank you! Your report was sent to the author.", "✅ Teşekkürler! Şikayetiniz yazara iletildi."],
+  "❗ Siz hali kanalga a'zo bo'lmadingiz.": ["❗ Вы ещё не подписались на канал.", "❗ You haven't joined the channel yet.", "❗ Henüz kanala katılmadınız."],
+  "✅ Rahmat!": ["✅ Спасибо!", "✅ Thank you!", "✅ Teşekkürler!"],
+  "🚫 Siz botdan bloklangansiz": ["🚫 Вы заблокированы в боте", "🚫 You are blocked from this bot", "🚫 Bottan engellendiniz"],
+  "Faqat muallif uchun": ["Только для автора", "Author only", "Sadece yazar için"],
+  "cheklanmagan": ["без ограничения", "unlimited", "sınırsız"],
+  "Hammasi": ["Все", "All", "Hepsi"],
+};
+
+// ---- Matn ichidagi bo'laklar (uzunlari birinchi) ----
+const LIT = [
+  // Yordam (/start)
+  ["Fayl yuboring — bot undan tayyor test tuzib beradi.", "Отправьте файл — бот сделает из него готовый тест.", "Send a file — the bot turns it into a ready quiz.", "Bir dosya gönderin — bot ondan hazır bir test oluşturur."],
+  ["1️⃣ Faylni yuboring (PDF, Word, Excel, .txt)", "1️⃣ Отправьте файл (PDF, Word, Excel, .txt)", "1️⃣ Send a file (PDF, Word, Excel, .txt)", "1️⃣ Dosyayı gönderin (PDF, Word, Excel, .txt)"],
+  ["2️⃣ Bo'lim va savollar sonini tanlang", "2️⃣ Выберите раздел и количество вопросов", "2️⃣ Choose a section and the number of questions", "2️⃣ Bölümü ve soru sayısını seçin"],
+  ["3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang", "3️⃣ Укажите название, описание, время и перемешивание", "3️⃣ Set the title, description, timer and shuffle", "3️⃣ Testin adını, açıklamasını, süresini ve karıştırmayı belirleyin"],
+  ["4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥", "4️⃣ Готово! Решайте сами, проводите в группе или делитесь 👥", "4️⃣ Done! Solve it yourself, run it in a group or share it 👥", "4️⃣ Hazır! Kendiniz çözün, grupta yapın veya paylaşın 👥"],
+  ["/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/lang — til\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish",
+    "/newquiz — новый тест\n/mytests — мои тесты\n/tests — тесты автора\n/guide — инструкция\n/lang — язык\n/reklama — реклама в боте\n/stop — остановить тест\n/cancel — отмена",
+    "/newquiz — new quiz\n/mytests — my quizzes\n/tests — author's quizzes\n/guide — guide\n/lang — language\n/reklama — advertise in the bot\n/stop — stop the quiz\n/cancel — cancel",
+    "/newquiz — yeni test\n/mytests — testlerim\n/tests — yazarın testleri\n/guide — kılavuz\n/lang — dil\n/reklama — botta reklam\n/stop — testi durdur\n/cancel — iptal"],
+  // Yangi test
+  ["📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yoki .txt faylni yuboring yoki matnni xabar qilib yozing.", "📄 <b>Способ 1 — из файла (быстро):</b> отправьте PDF, Word, Excel или .txt либо напишите текст сообщением.", "📄 <b>Option 1 — from a file (fast):</b> send a PDF, Word, Excel or .txt file, or type the text as a message.", "📄 <b>1. yol — dosyadan (hızlı):</b> PDF, Word, Excel veya .txt dosyası gönderin ya da metni mesaj olarak yazın."],
+  ["Savol ostiga <code>Izoh: ...</code> yozsangiz — javobdan keyin tushuntirish chiqadi. Word ichidagi rasmlar savolga o'zi biriktiriladi.", "Напишите под вопросом <code>Izoh: ...</code> — после ответа появится пояснение. Картинки из Word прикрепляются к вопросам автоматически.", "Write <code>Izoh: ...</code> (or <code>Explanation: ...</code>) under a question to show an explanation after the answer. Images inside Word files are attached to questions automatically.", "Sorunun altına <code>Açıklama: ...</code> yazarsanız cevaptan sonra açıklama gösterilir. Word içindeki resimler sorulara otomatik eklenir."],
+  ["✍️ <b>2-usul — QuizBot kabi, bittalab:</b> 📎 → <b>So'rovnoma</b> → <b>Viktorina</b> rejimini yoqing, to'g'ri javobni belgilang (izoh ham yozish mumkin) va shu yerga yuboring.", "✍️ <b>Способ 2 — как в QuizBot, по одному:</b> 📎 → <b>Опрос</b> → включите режим <b>Викторина</b>, отметьте правильный ответ (можно добавить пояснение) и отправьте сюда.", "✍️ <b>Option 2 — one by one, like QuizBot:</b> 📎 → <b>Poll</b> → turn on <b>Quiz mode</b>, mark the correct answer (an explanation is optional) and send it here.", "✍️ <b>2. yol — QuizBot gibi, tek tek:</b> 📎 → <b>Anket</b> → <b>Test modu</b>nu açın, doğru cevabı işaretleyin (açıklama da ekleyebilirsiniz) ve buraya gönderin."],
+  ["🖼 Rasmli savol uchun avval rasmni yuboring, keyin viktorinani.", "🖼 Для вопроса с картинкой сначала отправьте картинку, затем викторину.", "🖼 For an image question, send the image first, then the quiz poll.", "🖼 Resimli soru için önce resmi, sonra test anketini gönderin."],
+  // Kanal
+  ["📢 Botdan foydalanish uchun avval quyidagi kanallarimizga a'zo bo'ling:", "📢 Чтобы пользоваться ботом, подпишитесь на наши каналы:", "📢 To use the bot, please join our channels first:", "📢 Botu kullanmak için önce kanallarımıza katılın:"],
+  ["📢 Botdan foydalanish uchun avval kanalimizga a'zo bo'ling:", "📢 Чтобы пользоваться ботом, подпишитесь на наш канал:", "📢 To use the bot, please join our channel first:", "📢 Botu kullanmak için önce kanalımıza katılın:"],
+  ["A'zo bo'lgach, «✅ Tekshirish» tugmasini bosing.", "После подписки нажмите «✅ Проверить».", "After joining, press «✅ Check».", "Katıldıktan sonra «✅ Kontrol et» düğmesine basın."],
+  ["📢 Testni boshlash uchun avval kanallarimizga a'zo bo'ling.", "📢 Чтобы начать тест, подпишитесь на наши каналы.", "📢 Join our channels first to start the quiz.", "📢 Testi başlatmak için önce kanallarımıza katılın."],
+  ["✅ Rahmat! Endi botdan foydalanishingiz mumkin.", "✅ Спасибо! Теперь вы можете пользоваться ботом.", "✅ Thank you! You can use the bot now.", "✅ Teşekkürler! Artık botu kullanabilirsiniz."],
+  ["👨‍🏫 Bot muallifi:", "👨‍🏫 Автор бота:", "👨‍🏫 Bot author:", "👨‍🏫 Bot yazarı:"],
+  ["Taklif, savol yoki hamkorlik bo'yicha yozing 👇", "Пишите по предложениям, вопросам и сотрудничеству 👇", "Write with suggestions, questions or partnership ideas 👇", "Öneri, soru veya iş birliği için yazın 👇"],
+  ["👨‍🏫 Muallif:", "👨‍🏫 Автор:", "👨‍🏫 Author:", "👨‍🏫 Yazar:"],
+  // Yo'riqnoma
+  ["📖 Yo'riqnoma hali yuklanmagan. Savollar bo'lsa, muallifga yozing: /author", "📖 Инструкция ещё не загружена. Если есть вопросы, напишите автору: /author", "📖 The guide hasn't been uploaded yet. For questions, contact the author: /author", "📖 Kılavuz henüz yüklenmedi. Sorularınız için yazara yazın: /author"],
+  ["📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>", "📖 <b>LingoUP bot — инструкция</b>", "📖 <b>LingoUP bot — user guide</b>", "📖 <b>LingoUP bot — kullanım kılavuzu</b>"],
+  // Bloklash
+  ["🚫 Siz bot qoidalarini buzganingiz (nojo'ya mazmundagi test) uchun bloklandingiz.", "🚫 Вы заблокированы за нарушение правил бота (недопустимый тест).", "🚫 You have been blocked for breaking the bot rules (inappropriate quiz).", "🚫 Bot kurallarını ihlal ettiğiniz (uygunsuz test) için engellendiniz."],
+  ["✅ Siz blokdan chiqarildingiz. Botdan yana foydalanishingiz mumkin — /start", "✅ Вы разблокированы. Можете снова пользоваться ботом — /start", "✅ You have been unblocked. You can use the bot again — /start", "✅ Engeliniz kaldırıldı. Botu tekrar kullanabilirsiniz — /start"],
+  ["🚫 Siz botdan bloklangansiz.", "🚫 Вы заблокированы в боте.", "🚫 You are blocked from this bot.", "🚫 Bottan engellendiniz."],
+  ["E'tirozingiz bo'lsa:", "Если не согласны:", "If you disagree:", "İtirazınız varsa:"],
+  // Sozlamalar
+  ["⚙️ <b>Sozlamalar</b>", "⚙️ <b>Настройки</b>", "⚙️ <b>Settings</b>", "⚙️ <b>Ayarlar</b>"],
+  ["🗑 <b>Ma'lumotlarimni o'chirish</b> — botdagi barcha testlaringiz, natijalaringiz va reytingdagi o'rningiz butunlay o'chiriladi.", "🗑 <b>Удалить мои данные</b> — все ваши тесты, результаты и место в рейтинге будут удалены навсегда.", "🗑 <b>Delete my data</b> — all your quizzes, results and leaderboard places are permanently deleted.", "🗑 <b>Verilerimi sil</b> — bottaki tüm testleriniz, sonuçlarınız ve sıralamadaki yeriniz kalıcı olarak silinir."],
+  ["⚠️ <b>Telegram akkauntni o'chirish</b> — Telegram'ning rasmiy sahifasi ochiladi. U yerda telefon raqamingiz bilan kirib, akkauntni o'chirishni o'zingiz tasdiqlaysiz. <b>Diqqat:</b> akkaunt o'chirilsa, barcha chatlar, kontaktlar va kanallar qaytarib bo'lmaydigan tarzda yo'qoladi!", "⚠️ <b>Удалить аккаунт Telegram</b> — откроется официальная страница Telegram. Войдите по номеру телефона и сами подтвердите удаление. <b>Внимание:</b> все чаты, контакты и каналы будут потеряны безвозвратно!", "⚠️ <b>Delete Telegram account</b> — opens Telegram's official page. Log in with your phone number and confirm the deletion yourself. <b>Warning:</b> all chats, contacts and channels will be lost permanently!", "⚠️ <b>Telegram hesabını sil</b> — Telegram'ın resmi sayfası açılır. Telefon numaranızla giriş yapıp silmeyi kendiniz onaylarsınız. <b>Dikkat:</b> tüm sohbetler, kişiler ve kanallar geri getirilemez şekilde kaybolur!"],
+  ["🌐 <b>Til</b> — bot interfeysi tili.", "🌐 <b>Язык</b> — язык интерфейса бота.", "🌐 <b>Language</b> — the bot interface language.", "🌐 <b>Dil</b> — bot arayüzünün dili."],
+  ["🗑 <b>Ma'lumotlaringizni o'chirasizmi?</b>", "🗑 <b>Удалить ваши данные?</b>", "🗑 <b>Delete your data?</b>", "🗑 <b>Verileriniz silinsin mi?</b>"],
+  ["Botdagi barcha testlaringiz (kanaldagi postlari bilan), natijalaringiz va reytingdagi o'rningiz butunlay o'chiriladi. Buni qaytarib bo'lmaydi.", "Все ваши тесты (вместе с постами в канале), результаты и места в рейтинге будут удалены. Это нельзя отменить.", "All your quizzes (including their channel posts), results and leaderboard places will be deleted. This cannot be undone.", "Bottaki tüm testleriniz (kanal gönderileriyle birlikte), sonuçlarınız ve sıralamadaki yeriniz silinecek. Bu geri alınamaz."],
+  ["✅ Ma'lumotlaringiz o'chirildi.", "✅ Ваши данные удалены.", "✅ Your data has been deleted.", "✅ Verileriniz silindi."],
+  ["🎲 O'chirilgan testlar:", "🎲 Удалено тестов:", "🎲 Deleted quizzes:", "🎲 Silinen testler:"],
+  ["Botdan yana foydalanishingiz mumkin — /start", "Вы можете снова пользоваться ботом — /start", "You can use the bot again — /start", "Botu tekrar kullanabilirsiniz — /start"],
+  // Reklama (obunachi)
+  ["ga murojaat qiling.", "— напишите ему.", "— please contact them.", "ile iletişime geçin."],
+  ["📣 Botga reklama joylamoqchi bo'lsangiz", "📣 По вопросам рекламы в боте обращайтесь к", "📣 To advertise in this bot, contact", "📣 Bota reklam vermek isterseniz"],
+  // Yaratish
+  ["📄 Test tuzish uchun faylni yuboring yoki /newquiz buyrug'ini bosing.", "📄 Чтобы создать тест, отправьте файл или нажмите /newquiz.", "📄 To create a quiz, send a file or tap /newquiz.", "📄 Test oluşturmak için dosya gönderin veya /newquiz komutuna basın."],
+  ["Raqam yozing, masalan: 25", "Напишите число, например: 25", "Type a number, for example: 25", "Bir sayı yazın, örneğin: 25"],
+  ["❗ So'rovnomani <b>«Viktorina»</b> (Quiz) rejimida yarating va to'g'ri javobni belgilang.", "❗ Создайте опрос в режиме <b>«Викторина»</b> и отметьте правильный ответ.", "❗ Create the poll in <b>Quiz mode</b> and mark the correct answer.", "❗ Anketi <b>«Test»</b> (Quiz) modunda oluşturun ve doğru cevabı işaretleyin."],
+  ["❗ To'g'ri javob ko'rinmadi. Viktorinani boshqa joydan forward qilmang — shu chatning o'zida 📎 → So'rovnoma orqali yarating.", "❗ Правильный ответ не виден. Не пересылайте викторину — создайте её прямо в этом чате: 📎 → Опрос.", "❗ The correct answer isn't visible. Don't forward the quiz — create it right in this chat via 📎 → Poll.", "❗ Doğru cevap görünmüyor. Testi başka yerden iletmeyin — doğrudan bu sohbette 📎 → Anket ile oluşturun."],
+  ["Yana viktorina yuboring (rasmli savol uchun avval rasmni) yoki testni yakunlang.", "Отправьте ещё викторину (для вопроса с картинкой — сначала картинку) или завершите тест.", "Send another quiz poll (for an image question, send the image first) or finish the quiz.", "Başka bir test anketi gönderin (resimli soru için önce resmi) veya testi bitirin."],
+  ["✅ Rasm savolga biriktirildi.", "✅ Картинка прикреплена к вопросу.", "✅ Image attached to the question.", "✅ Resim soruya eklendi."],
+  ["🖼 Rasm qabul qilindi — u <b>keyingi yuboradigan viktorinangizga</b> biriktiriladi.", "🖼 Картинка получена — она будет прикреплена к <b>следующей викторине</b>.", "🖼 Image received — it will be attached to <b>your next quiz poll</b>.", "🖼 Resim alındı — <b>göndereceğiniz bir sonraki test anketine</b> eklenecek."],
+  ["Endi 📎 → So'rovnoma → <b>Viktorina</b> rejimida savolni yarating va yuboring.", "Теперь создайте вопрос: 📎 → Опрос → режим <b>Викторина</b> — и отправьте.", "Now create the question via 📎 → Poll → <b>Quiz mode</b> and send it.", "Şimdi 📎 → Anket → <b>Test</b> modunda soruyu oluşturup gönderin."],
+  ["❗ Fayl 20 MB dan katta. Darslarni alohida fayl qilib yuboring.", "❗ Файл больше 20 МБ. Отправьте уроки отдельными файлами.", "❗ The file is larger than 20 MB. Send lessons as separate files.", "❗ Dosya 20 MB'tan büyük. Dersleri ayrı dosyalar olarak gönderin."],
+  ["lekin to'g'ri javoblari ko'rsatilmagan.", "но правильные ответы не указаны.", "but the correct answers are not marked.", "ancak doğru cevaplar belirtilmemiş."],
+  ["Har bir savol ostiga <code>Javob: B</code> kabi yozing yoki to'g'ri variant oldiga * qo'ying.", "Напишите под каждым вопросом <code>Javob: B</code> (или <code>Answer: B</code>) либо поставьте * перед правильным вариантом.", "Write <code>Answer: B</code> under each question or put * before the correct option.", "Her sorunun altına <code>Cevap: B</code> yazın veya doğru seçeneğin önüne * koyun."],
+  ["❗ PDF ichidan matn topilmadi. Skanerlangan (rasm) PDF bo'lishi mumkin — Word'dan saqlangan PDF yuboring.", "❗ В PDF не найден текст. Возможно, это скан — отправьте PDF, сохранённый из Word.", "❗ No text found in the PDF. It may be a scan — send a PDF saved from Word.", "❗ PDF'te metin bulunamadı. Taranmış olabilir — Word'den kaydedilmiş bir PDF gönderin."],
+  ["❗ Fayldan so'z yoki test savoli topilmadi. Boshqa fayl yuborib ko'ring.", "❗ В файле не найдено слов или вопросов. Попробуйте другой файл.", "❗ No words or quiz questions were found in the file. Try another file.", "❗ Dosyada kelime veya test sorusu bulunamadı. Başka bir dosya deneyin."],
+  ["❗ Faylni o'qib bo'lmadi. Formatni tekshiring: /help", "❗ Не удалось прочитать файл. Проверьте формат: /help", "❗ Couldn't read the file. Check the format: /help", "❗ Dosya okunamadı. Biçimi kontrol edin: /help"],
+  ["❗ Kamida 4 ta so'z juftligi kerak. Format:", "❗ Нужно минимум 4 пары слов. Формат:", "❗ At least 4 word pairs are needed. Format:", "❗ En az 4 kelime çifti gerekli. Biçim:"],
+  ["so'z - tarjima", "слово - перевод", "word - translation", "kelime - çeviri"],
+  ["❗ Bu bo'limda 4 tadan kam so'z bor. Boshqa bo'limni tanlang.", "❗ В этом разделе меньше 4 слов. Выберите другой раздел.", "❗ This section has fewer than 4 words. Choose another section.", "❗ Bu bölümde 4'ten az kelime var. Başka bir bölüm seçin."],
+  ["Qaysi bo'limdan test tuzamiz?", "Из какого раздела сделать тест?", "Which section should the quiz use?", "Hangi bölümden test yapalım?"],
+  ["Nechta savol bo'lsin?", "Сколько вопросов?", "How many questions?", "Kaç soru olsun?"],
+  ["🔀 Savol yo'nalishini tanlang:", "🔀 Выберите направление вопросов:", "🔀 Choose the question direction:", "🔀 Soru yönünü seçin:"],
+  ["✏️ Test nomini yozing.", "✏️ Напишите название теста.", "✏️ Type the quiz title.", "✏️ Testin adını yazın."],
+  ["Tavsiya:", "Предложение:", "Suggestion:", "Öneri:"],
+  ["Test tavsifini yozing (masalan: «A1 darajasi, 1-dars so'zlari»).", "Напишите описание теста (например: «Уровень A1, слова 1-го урока»).", "Type a quiz description (e.g. «A1 level, lesson 1 words»).", "Test açıklamasını yazın (örneğin: «A1 seviyesi, 1. ders kelimeleri»)."],
+  ["Kerak bo'lmasa — o'tkazib yuboring (/skip).", "Если не нужно — пропустите (/skip).", "If not needed, skip it (/skip).", "Gerekmiyorsa atlayın (/skip)."],
+  ["⏱ Har bir savol uchun vaqtni tanlang:", "⏱ Выберите время на каждый вопрос:", "⏱ Choose the time for each question:", "⏱ Her soru için süreyi seçin:"],
+  ["<i>Guruhda hamma shu vaqt ichida javob beradi.</i>", "<i>В группе все отвечают в течение этого времени.</i>", "<i>In groups, everyone answers within this time.</i>", "<i>Grupta herkes bu süre içinde cevap verir.</i>"],
+  ["🔀 Savollar va javob variantlari aralashtirilsinmi?", "🔀 Перемешивать вопросы и варианты ответов?", "🔀 Shuffle questions and answer options?", "🔀 Sorular ve seçenekler karıştırılsın mı?"],
+  ["<i>Har safar boshqacha tartibda chiqadi.</i>", "<i>Каждый раз в новом порядке.</i>", "<i>A different order every time.</i>", "<i>Her seferinde farklı sırada çıkar.</i>"],
+  ["⏳ Testingiz tekshiruvga yuborildi. Unda bot qoidalariga to'g'ri kelmaydigan so'zlar bor bo'lishi mumkin.", "⏳ Ваш тест отправлен на проверку: в нём могут быть слова, нарушающие правила бота.", "⏳ Your quiz was sent for review: it may contain words that break the bot rules.", "⏳ Testiniz incelemeye gönderildi: bot kurallarına uymayan kelimeler içeriyor olabilir."],
+  ["Muallif ko'rib chiqqach, test ochiladi. Nojo'ya (erotik, noqonuniy) mazmundagi testlar uchun bot bloklanadi.", "Тест откроется после проверки автором. За недопустимые (эротические, незаконные) тесты бот блокируется.", "The quiz will open after the author reviews it. Inappropriate (erotic, illegal) quizzes lead to a block.", "Yazar inceledikten sonra test açılır. Uygunsuz (erotik, yasa dışı) testler engellenmeye yol açar."],
+  ["👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin.", "👍 Тест создан! Теперь его можно решать, проводить в группе или делиться им.", "👍 Quiz created! You can now solve it, run it in a group or share it.", "👍 Test oluşturuldu! Artık çözebilir, grupta yapabilir veya paylaşabilirsiniz."],
+  ["🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing.", "🔒 Пока виден только вам. Чтобы показать подписчикам, нажмите «🌐 Показать всем».", "🔒 For now only you can see it. Tap «🌐 Show to everyone» to share it with subscribers.", "🔒 Şimdilik sadece siz görüyorsunuz. Abonelere göstermek için «🌐 Herkese göster»e basın."],
+  ["📢 Test kanalimizga ham joylandi.", "📢 Тест также опубликован в нашем канале.", "📢 The quiz was also posted to our channel.", "📢 Test kanalımızda da yayınlandı."],
+  ["🗂 Muallif testlari hali joylanmagan. Tez orada qo'shiladi!", "🗂 Тесты автора пока не опубликованы. Скоро появятся!", "🗂 No author quizzes yet. Coming soon!", "🗂 Yazarın testleri henüz eklenmedi. Yakında!"],
+  ["Testni tanlang:", "Выберите тест:", "Choose a quiz:", "Bir test seçin:"],
+  ["🗂 <b>Muallif testlari</b>", "🗂 <b>Тесты автора</b>", "🗂 <b>Author's quizzes</b>", "🗂 <b>Yazarın testleri</b>"],
+  ["Hali test yo'q. Faylni yuboring yoki /newquiz 📄", "Тестов пока нет. Отправьте файл или /newquiz 📄", "No quizzes yet. Send a file or /newquiz 📄", "Henüz test yok. Dosya gönderin veya /newquiz 📄"],
+  ["📚 Sizning testlaringiz:", "📚 Ваши тесты:", "📚 Your quizzes:", "📚 Testleriniz:"],
+  ["⏳ Bu test hali tekshiruvda. Muallif ko'rib chiqqach ochiladi.", "⏳ Этот тест ещё на проверке. Он откроется после проверки автором.", "⏳ This quiz is still under review. It will open after the author checks it.", "⏳ Bu test hâlâ incelemede. Yazar inceledikten sonra açılacak."],
+  ["❗ Test topilmadi yoki o'chirilgan.", "❗ Тест не найден или удалён.", "❗ Quiz not found or deleted.", "❗ Test bulunamadı veya silinmiş."],
+  ["❗ Test topilmadi.", "❗ Тест не найден.", "❗ Quiz not found.", "❗ Test bulunamadı."],
+  // Karta
+  ["Har bir savolda izoh bor", "Пояснение у каждого вопроса", "Every question has an explanation", "Her soruda açıklama var"],
+  ["🌐 Hammaga ko'rinadi («Muallif testlari» va kanalda)", "🌐 Виден всем («Тесты автора» и канал)", "🌐 Visible to everyone (Author's quizzes and the channel)", "🌐 Herkese açık («Yazarın testleri» ve kanalda)"],
+  ["🔒 Faqat sizga ko'rinadi", "🔒 Виден только вам", "🔒 Visible only to you", "🔒 Sadece size görünür"],
+  ["🔀 Hammasi aralashtiriladi", "🔀 Перемешивать всё", "🔀 Shuffle everything", "🔀 Hepsi karıştırılır"],
+  ["🔀 Aralashtirilmaydi", "🔀 Без перемешивания", "🔀 No shuffle", "🔀 Karıştırılmaz"],
+  ["🔀 Faqat savollar", "🔀 Только вопросы", "🔀 Questions only", "🔀 Sadece sorular"],
+  ["🔀 Faqat javoblar", "🔀 Только ответы", "🔀 Answers only", "🔀 Sadece cevaplar"],
+  // Tahrirlash
+  ["— nimani o'zgartiramiz?", "— что изменить?", "— what should we change?", "— neyi değiştirelim?"],
+  ["🖼 <b>Rasm va izohlar</b>", "🖼 <b>Картинки и пояснения</b>", "🖼 <b>Images and explanations</b>", "🖼 <b>Resimler ve açıklamalar</b>"],
+  ["Savolni tanlang. 🖼 — rasmi bor, 💬 — izohi bor.", "Выберите вопрос. 🖼 — есть картинка, 💬 — есть пояснение.", "Choose a question. 🖼 — has an image, 💬 — has an explanation.", "Bir soru seçin. 🖼 — resmi var, 💬 — açıklaması var."],
+  ["Izoh javob berilgandan keyin 💡 belgisi ostida ko'rinadi.", "Пояснение видно после ответа под значком 💡.", "The explanation appears after answering, under the 💡 icon.", "Açıklama cevaptan sonra 💡 simgesinin altında görünür."],
+  ["❗ Savol topilmadi.", "❗ Вопрос не найден.", "❗ Question not found.", "❗ Soru bulunamadı."],
+  ["🖼 Rasm yuboring (rasm sifatida, fayl emas) yoki /cancel", "🖼 Отправьте картинку (как фото, не файлом) или /cancel", "🖼 Send an image (as a photo, not a file) or /cancel", "🖼 Bir resim gönderin (dosya değil, fotoğraf olarak) veya /cancel"],
+  ["❗ Bu matnda bot qoidalariga to'g'ri kelmaydigan so'z bor. Boshqacha yozing.", "❗ В тексте есть слово, нарушающее правила бота. Напишите иначе.", "❗ This text contains a word that breaks the bot rules. Please rephrase.", "❗ Bu metinde bot kurallarına uymayan bir kelime var. Farklı yazın."],
+  ["✅ Izoh saqlandi.", "✅ Пояснение сохранено.", "✅ Explanation saved.", "✅ Açıklama kaydedildi."],
+  ["Nom bo'sh bo'lishi mumkin emas.", "Название не может быть пустым.", "The title can't be empty.", "Ad boş olamaz."],
+  ["✅ Saqlandi.", "✅ Сохранено.", "✅ Saved.", "✅ Kaydedildi."],
+  ["❌ Savollar bekor qilindi.", "❌ Вопросы отменены.", "❌ Questions cancelled.", "❌ Sorular iptal edildi."],
+  ["Izoh o'quvchi javob bergandan keyin ko'rinadi.", "Пояснение будет видно после ответа.", "The explanation is shown after the student answers.", "Açıklama öğrenci cevap verdikten sonra görünür."],
+  ["Bekor qilish: /cancel", "Отмена: /cancel", "Cancel: /cancel", "İptal: /cancel"],
+  ["📝 Yangi tavsifni yozing (o'chirish uchun «-» yozing):", "📝 Напишите новое описание (чтобы удалить, отправьте «-»):", "📝 Type a new description (send «-» to remove it):", "📝 Yeni açıklamayı yazın (silmek için «-» gönderin):"],
+  ["✏️ Yangi nomni yozing:", "✏️ Напишите новое название:", "✏️ Type the new title:", "✏️ Yeni adı yazın:"],
+  ["⏱ Yangi vaqtni tanlang:", "⏱ Выберите новое время:", "⏱ Choose the new time:", "⏱ Yeni süreyi seçin:"],
+  ["🔀 Aralashtirishni tanlang:", "🔀 Выберите перемешивание:", "🔀 Choose shuffle mode:", "🔀 Karıştırmayı seçin:"],
+  ["🗑 Test o'chirildi.", "🗑 Тест удалён.", "🗑 Quiz deleted.", "🗑 Test silindi."],
+  ["Natijalar ham o'chadi.", "Результаты тоже удалятся.", "Results will be deleted too.", "Sonuçlar da silinir."],
+  // O'tkazish
+  ["▶️ Davom etamiz!", "▶️ Продолжаем!", "▶️ Let's continue!", "▶️ Devam ediyoruz!"],
+  ["⏳ Bu chatda test davom etmoqda. To'xtatish: /stop", "⏳ В этом чате уже идёт тест. Остановить: /stop", "⏳ A quiz is already running in this chat. Stop it: /stop", "⏳ Bu sohbette bir test devam ediyor. Durdurmak için: /stop"],
+  ["❗ Savol tuzib bo'lmadi.", "❗ Не удалось составить вопросы.", "❗ Couldn't build the questions.", "❗ Sorular oluşturulamadı."],
+  ["🏁 Tayyor bo'lsangiz, pastdagi tugmani bosing.", "🏁 Когда будете готовы, нажмите кнопку ниже.", "🏁 When you're ready, press the button below.", "🏁 Hazır olduğunuzda aşağıdaki düğmeye basın."],
+  ["To'xtatish: /stop", "Остановить: /stop", "Stop: /stop", "Durdur: /stop"],
+  ["🚀 Test boshlandi!", "🚀 Тест начался!", "🚀 The quiz has started!", "🚀 Test başladı!"],
+  ["Hech kim javob bermagani uchun test to'xtatildi.", "Тест остановлен: никто не отвечал.", "The quiz was stopped because nobody answered.", "Kimse cevap vermediği için test durduruldu."],
+  ["⏸ Siz javob bermaganingiz uchun test to'xtab turibdi.", "⏸ Тест на паузе, так как вы не отвечали.", "⏸ The quiz is paused because you didn't answer.", "⏸ Cevap vermediğiniz için test duraklatıldı."],
+  ["⚠️ Xatolik yuz berdi, test to'xtatildi.", "⚠️ Произошла ошибка, тест остановлен.", "⚠️ An error occurred, the quiz was stopped.", "⚠️ Bir hata oluştu, test durduruldu."],
+  ["Hozir test ketmayapti.", "Сейчас тест не идёт.", "No quiz is running right now.", "Şu anda devam eden test yok."],
+  ["Faqat testni boshlagan kishi yoki admin to'xtata oladi.", "Остановить может только тот, кто начал тест, или админ.", "Only the person who started the quiz or an admin can stop it.", "Sadece testi başlatan kişi veya yönetici durdurabilir."],
+  ["⏹ Test bekor qilindi.", "⏹ Тест отменён.", "⏹ Quiz cancelled.", "⏹ Test iptal edildi."],
+  ["⏹ Test to'xtatildi.", "⏹ Тест остановлен.", "⏹ Quiz stopped.", "⏹ Test durduruldu."],
+  ["❌ Bekor qilindi.", "❌ Отменено.", "❌ Cancelled.", "❌ İptal edildi."],
+  ["Hech kim qatnashmadi.", "Никто не участвовал.", "Nobody took part.", "Kimse katılmadı."],
+  ["🏆 G'oliblarni tabriklaymiz!", "🏆 Поздравляем победителей!", "🏆 Congratulations to the winners!", "🏆 Kazananları tebrik ederiz!"],
+  ["📈 Yangi rekord! Natijangiz yangilandi.", "📈 Новый рекорд! Результат обновлён.", "📈 New record! Your result was updated.", "📈 Yeni rekor! Sonucunuz güncellendi."],
+  ["<i>Reytingda eng yaxshi natijangiz saqlanadi.</i>", "<i>В рейтинге сохраняется ваш лучший результат.</i>", "<i>Your best result is kept on the leaderboard.</i>", "<i>Sıralamada en iyi sonucunuz saklanır.</i>"],
+  ["<b>Eng yaxshi 5 natija:</b>", "<b>Топ-5 результатов:</b>", "<b>Top 5 results:</b>", "<b>En iyi 5 sonuç:</b>"],
+  ["🏆 Eng yaxshi 5 natija (to'g'ri javoblar, keyin vaqt bo'yicha):", "🏆 Топ-5 (по правильным ответам, затем по времени):", "🏆 Top 5 (by correct answers, then by time):", "🏆 En iyi 5 (doğru cevaplara, sonra süreye göre):"],
+  ["📝 <b>Takrorlash kerak:</b>", "📝 <b>Нужно повторить:</b>", "📝 <b>Review these:</b>", "📝 <b>Tekrar etmeniz gerekenler:</b>"],
+  ["✅ To'g'ri —", "✅ Правильно —", "✅ Correct —", "✅ Doğru —"],
+  ["❌ Xato —", "❌ Ошибки —", "❌ Wrong —", "❌ Yanlış —"],
+  ["⌛️ O'tkazilgan —", "⌛️ Пропущено —", "⌛️ Skipped —", "⌛️ Atlanan —"],
+  ["📈 Yangi rekord!", "📈 Новый рекорд!", "📈 New record!", "📈 Yeni rekor!"],
+  ["— xatolar", "— ошибки", "— mistakes", "— hatalar"],
+  ["⬆️ Rasmdagi savolga javob bering", "⬆️ Ответьте на вопрос с картинки", "⬆️ Answer the question in the image", "⬆️ Resimdeki soruyu cevaplayın"],
+  ["⬆️ Yuqoridagi savolga javob bering", "⬆️ Ответьте на вопрос выше", "⬆️ Answer the question above", "⬆️ Yukarıdaki soruyu cevaplayın"],
+  // Tilni tanlash
+  ["🌐 Tilni tanlang", "🌐 Выберите язык", "🌐 Choose your language", "🌐 Dilinizi seçin"],
+  ["✅ Til o'zgartirildi.", "✅ Язык изменён.", "✅ Language changed.", "✅ Dil değiştirildi."],
+];
+
+// ---- Shablonlar (o'zgaruvchili joylar) ----
+const RX = [
+  [/🏁 <b>(.*?)<\/b> testi yakunlandi!/g, "🏁 Тест <b>$1</b> завершён!", "🏁 Quiz <b>$1</b> is over!", "🏁 <b>$1</b> testi bitti!"],
+  [/🎲 <b>(.*?)<\/b> testiga tayyorlaning/g, "🎲 Приготовьтесь к тесту <b>$1</b>", "🎲 Get ready for the quiz <b>$1</b>", "🎲 <b>$1</b> testine hazırlanın"],
+  [/🏁 Kamida (\d+) kishi «Tayyorman» tugmasini bosganda test boshlanadi\./g, "🏁 Тест начнётся, когда минимум $1 человека нажмут «Я готов».", "🏁 The quiz starts when at least $1 people press «I'm ready».", "🏁 En az $1 kişi «Hazırım»a bastığında test başlar."],
+  [/✅ Tayyorman! \((\d+)\/(\d+)\)/g, "✅ Я готов! ($1/$2)", "✅ I'm ready! ($1/$2)", "✅ Hazırım! ($1/$2)"],
+  [/Siz (\d+) ta savolga javob berdingiz:/g, "Вы ответили на вопросов: $1", "You answered $1 questions:", "$1 soruyu cevapladınız:"],
+  [/(\d+) ta savolga javob berildi\./g, "Отвечено вопросов: $1.", "$1 questions were answered.", "$1 soru cevaplandı."],
+  [/🏆 Siz (\d+) ishtirokchi ichida <b>(\d+)-o'rin<\/b>dasiz\./g, "🏆 Вы на <b>$2-м месте</b> из $1 участников.", "🏆 You are in <b>place #$2</b> out of $1 participants.", "🏆 $1 katılımcı arasında <b>$2. sıradasınız</b>."],
+  [/🎯 Xatolarni qayta ishlash \((\d+)\)/g, "🎯 Работа над ошибками ($1)", "🎯 Practice mistakes ($1)", "🎯 Hatalar üzerinde çalış ($1)"],
+  [/✅ Tayyor — testni yakunlash \((\d+)\)/g, "✅ Готово — завершить тест ($1)", "✅ Done — finish the quiz ($1)", "✅ Tamam — testi bitir ($1)"],
+  [/✅ (\d+)-savol qo'shildi/g, "✅ Вопрос $1 добавлен", "✅ Question $1 added", "✅ $1. soru eklendi"],
+  [/↩️ Oxirgi savol o'chirildi\. Hozir (\d+) ta savol\./g, "↩️ Последний вопрос удалён. Сейчас вопросов: $1.", "↩️ Last question removed. Now $1 questions.", "↩️ Son soru silindi. Şu an $1 soru var."],
+  [/🖼 (\d+) ta rasm topildi, yuklanmoqda…/g, "🖼 Найдено картинок: $1, загружаем…", "🖼 Found $1 images, uploading…", "🖼 $1 resim bulundu, yükleniyor…"],
+  [/❗ (\d+) ta savol topildi,/g, "❗ Найдено вопросов: $1,", "❗ Found $1 questions,", "❗ $1 soru bulundu,"],
+  [/✅ (\d+) ta test savoli topildi \(variantlari va to'g'ri javoblari bilan\)\./g, "✅ Найдено вопросов: $1 (с вариантами и правильными ответами).", "✅ Found $1 quiz questions (with options and correct answers).", "✅ $1 test sorusu bulundu (seçenekler ve doğru cevaplarla)."],
+  [/🖼 Rasmli savollar: (\d+)/g, "🖼 Вопросов с картинкой: $1", "🖼 Image questions: $1", "🖼 Resimli sorular: $1"],
+  [/💬 Izohli savollar: (\d+)/g, "💬 Вопросов с пояснением: $1", "💬 Questions with explanations: $1", "💬 Açıklamalı sorular: $1"],
+  [/⚠️ (\d+) ta savolda to'g'ri javob ko'rsatilmagan — ular qo'shilmadi\./g, "⚠️ В $1 вопр. не указан правильный ответ — они пропущены.", "⚠️ $1 questions have no correct answer marked — they were skipped.", "⚠️ $1 soruda doğru cevap belirtilmemiş — eklenmedi."],
+  [/📖 (\d+) ta so'z topildi\./g, "📖 Найдено слов: $1.", "📖 Found $1 words.", "📖 $1 kelime bulundu."],
+  [/📖 <b>(\d+)<\/b> ta so'z\./g, "📖 Слов: <b>$1</b>.", "📖 <b>$1</b> words.", "📖 <b>$1</b> kelime."],
+  [/📚 Hammasi \((\d+)\)/g, "📚 Все ($1)", "📚 All ($1)", "📚 Hepsi ($1)"],
+  [/^Hammasi \((\d+)\)$/g, "Все ($1)", "All ($1)", "Hepsi ($1)"],
+  [/Nechta savol\? \(1–(\d+)\) Raqam yozing:/g, "Сколько вопросов? (1–$1) Напишите число:", "How many questions? (1–$1) Type a number:", "Kaç soru? (1–$1) Bir sayı yazın:"],
+  [/🖼 (\d+)-savol uchun rasmni yuboring\./g, "🖼 Отправьте картинку для вопроса $1.", "🖼 Send the image for question $1.", "🖼 $1. soru için resmi gönderin."],
+  [/💬 (\d+)-savol uchun izoh yozing \((\d+) belgigacha\)\./g, "💬 Напишите пояснение к вопросу $1 (до $2 символов).", "💬 Type an explanation for question $1 (up to $2 characters).", "💬 $1. soru için açıklama yazın ($2 karaktere kadar)."],
+  [/❗ Izoh (\d+) belgidan oshmasin \(hozir (\d+)\)\. Qisqaroq yozing\./g, "❗ Пояснение не длиннее $1 символов (сейчас $2). Сократите.", "❗ The explanation must be at most $1 characters (now $2). Please shorten it.", "❗ Açıklama en fazla $1 karakter olmalı (şu an $2). Kısaltın."],
+  [/<b>(\d+)-savol:<\/b>/g, "<b>Вопрос $1:</b>", "<b>Question $1:</b>", "<b>$1. soru:</b>"],
+  [/(\d+)-savol rasmi/g, "Картинка вопроса $1", "Image for question $1", "$1. sorunun resmi"],
+  [/🖼 Rasm: bor/g, "🖼 Картинка: есть", "🖼 Image: yes", "🖼 Resim: var"],
+  [/🖼 Rasm: yo'q/g, "🖼 Картинка: нет", "🖼 Image: none", "🖼 Resim: yok"],
+  [/💬 Izoh: yo'q/g, "💬 Пояснение: нет", "💬 Explanation: none", "💬 Açıklama: yok"],
+  [/💬 Izoh: /g, "💬 Пояснение: ", "💬 Explanation: ", "💬 Açıklama: "],
+  [/ — (\d+)\/(\d+)-sahifa/g, " — стр. $1/$2", " — page $1/$2", " — sayfa $1/$2"],
+  [/<\/b> \((\d+) ta\)/g, "</b> ($1)", "</b> ($1)", "</b> ($1)"],
+  [/ testini o'chirasizmi\?/g, " — удалить тест?", " — delete this quiz?", " — test silinsin mi?"],
+  [/✏️ Yangi nomni yozing:\n\(hozirgi: /g, "✏️ Напишите новое название:\n(сейчас: ", "✏️ Type the new title:\n(current: ", "✏️ Yeni adı yazın:\n(şu anki: "],
+  [/📢 (\d+)-kanalga o'tish/g, "📢 Канал $1", "📢 Channel $1", "📢 $1. kanal"],
+  [/Avval kanallarga a'zo bo'ling: /g, "Сначала подпишитесь на каналы: ", "Join the channels first: ", "Önce kanallara katılın: "],
+  [/(\d+) kishi yechgan/g, "Решили: $1", "$1 people solved it", "$1 kişi çözdü"],
+  [/(\d+) ta rasmli savol/g, "Вопросов с картинкой: $1", "$1 image questions", "$1 resimli soru"],
+  [/(\d+) ta savolda izoh bor/g, "Пояснения в $1 вопр.", "$1 questions have explanations", "$1 soruda açıklama var"],
+  [/Har bir savolga ([^\n]+)/g, "Время на вопрос: $1", "Time per question: $1", "Soru başına süre: $1"],
+  [/ · (\d+) savol\b/g, " · $1 вопр.", " · $1 questions", " · $1 soru"],
+  [/(\d+) ta savol\b/g, "Вопросов: $1", "$1 questions", "$1 soru"],
+  [/(\d+) daq (\d+) son\b/g, "$1 мин $2 сек", "$1 min $2 sec", "$1 dk $2 sn"],
+  [/(\d+) soniya\b/g, "$1 сек", "$1 seconds", "$1 saniye"],
+  [/(\d+(?:\.\d+)?) daqiqa\b/g, "$1 мин", "$1 minutes", "$1 dakika"],
+  [/^(\d+) son$/g, "$1 сек", "$1 sec", "$1 sn"],
+  [/^(\d+) daq$/g, "$1 мин", "$1 min", "$1 dk"],
+  [/\((\d+) son\)/g, "($1 сек)", "($1 sec)", "($1 sn)"],
+  [/(\d+) son\b/g, "$1 сек", "$1 sec", "$1 sn"],
+  [/\bcheklanmagan\b/g, "без ограничения", "unlimited", "sınırsız"],
+];
+
+const LIT_SORTED = [...LIT].sort((a, b) => b[0].length - a[0].length);
+
+// Matnni tanlangan tilga o'girish
+export function tr(lang, s) {
+  if (!s || typeof s !== "string" || !lang || lang === "uz" || !(lang in IDX)) return s;
+  const k = IDX[lang];
+  if (EXACT[s]) return EXACT[s][k];
+  for (const row of RX) s = s.replace(row[0], row[k + 1]);
+  for (const row of LIT_SORTED) if (s.includes(row[0])) s = s.split(row[0]).join(row[k + 1]);
+  return s;
+}
+
+// Tugma matnlarini tarjima qilish
+export function trMarkup(lang, rm) {
+  if (!rm || lang === "uz") return rm;
+  const map = (rows) => rows.map((row) => row.map((b) => ({ ...b, text: tr(lang, b.text) })));
+  const out = { ...rm };
+  if (rm.inline_keyboard) out.inline_keyboard = map(rm.inline_keyboard);
+  if (rm.keyboard) out.keyboard = map(rm.keyboard);
+  return out;
+}
+
+// Tarjima qilingan tugma bosilganda — o'zbekcha asl nomini qaytarish
+export function fromButton(text) {
+  if (!text) return text;
+  for (const [uz, vals] of Object.entries(EXACT)) if (vals.includes(text)) return uz;
+  return text;
+}
+
+// Buyruqlar menyusi tarjimasi
+export const CMD_TR = {
+  "Boshlash": ["Начать", "Start", "Başlat"],
+  "Yangi test yaratish": ["Создать тест", "Create a quiz", "Yeni test oluştur"],
+  "Mening testlarim": ["Мои тесты", "My quizzes", "Testlerim"],
+  "🗂 Muallif testlari": ["🗂 Тесты автора", "🗂 Author's quizzes", "🗂 Yazarın testleri"],
+  "Yo'riqnoma (PDF)": ["Инструкция (PDF)", "Guide (PDF)", "Kılavuz (PDF)"],
+  "📣 Botga reklama berish": ["📣 Реклама в боте", "📣 Advertise in the bot", "📣 Bota reklam ver"],
+  "Muallif bilan bog'lanish": ["Связаться с автором", "Contact the author", "Yazarla iletişim"],
+  "⚙️ Sozlamalar": ["⚙️ Настройки", "⚙️ Settings", "⚙️ Ayarlar"],
+  "🌐 Til / Language": ["🌐 Язык / Language", "🌐 Language", "🌐 Dil / Language"],
+  "Testni to'xtatish": ["Остановить тест", "Stop the quiz", "Testi durdur"],
+  "Bekor qilish": ["Отмена", "Cancel", "İptal"],
+};
+export function trCommands(lang, cmds) {
+  if (lang === "uz") return cmds;
+  return cmds.map((c) => ({ ...c, description: CMD_TR[c.description]?.[IDX[lang]] || c.description }));
+}
