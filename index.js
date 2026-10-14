@@ -408,6 +408,19 @@ export class Store extends DurableObject {
     const r = this.sql.exec("SELECT * FROM ads WHERE id=?", id).toArray()[0];
     return r ? { ...r, msgIds: JSON.parse(r.msgIds) } : null;
   }
+  // Foydalanuvchini ro'yxatda faol qilib qo'yadi (bloklangan deb belgilangan bo'lsa ham)
+  // va unga hali yetib bormagan faol reklamalarni qaytaradi
+  touchUser(uid) {
+    const had = this.sql.exec("SELECT blocked FROM users WHERE uid=?", uid).toArray()[0];
+    if (!had) this.sql.exec("INSERT INTO users(uid,created) VALUES(?,?)", uid, Date.now());
+    else if (had.blocked) this.sql.exec("UPDATE users SET blocked=0 WHERE uid=?", uid);
+    return this.sql.exec("SELECT * FROM ads WHERE active=1 AND id NOT IN (SELECT ad FROM deliveries WHERE uid=?) ORDER BY id", uid)
+      .toArray().map((r) => ({ ...r, msgIds: JSON.parse(r.msgIds) }));
+  }
+  deliveredTo(ad, uids) {
+    if (!uids.length) return [];
+    return this.sql.exec(`SELECT uid FROM deliveries WHERE ad=? AND uid IN (${uids.map(() => "?").join(",")})`, ad, ...uids).toArray().map((r) => r.uid);
+  }
   activeAds() {
     return this.sql.exec("SELECT * FROM ads WHERE active=1 ORDER BY id").toArray().map((r) => ({ ...r, msgIds: JSON.parse(r.msgIds) }));
   }
@@ -699,11 +712,14 @@ export class Chat extends DurableObject {
       return;
     }
     // Yangi foydalanuvchini ro'yxatga olamiz (reklama uchun) va faol reklamani ko'rsatamiz
-    let isNew = false;
-    if (isPrivate && uid && !(await this.st.get("reg"))) {
-      isNew = await this.store().addUser(uid);
-      await this.st.put("reg", 1);
+    // Har 3 soatda bir marta: ro'yxatda faollashtiramiz va o'tkazib yuborilgan faol reklamalarni yetkazamiz
+    let missed = [];
+    const reg = await this.st.get("reg");
+    if (isPrivate && uid && (!reg || reg === 1 || Date.now() - reg > 3 * 3600e3 || /^\/start\b/.test(m?.text || ""))) {
+      missed = await this.store().touchUser(uid);
+      await this.st.put("reg", Date.now());
     }
+    const isNew = missed.length > 0;
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
     if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds2"))) {
       await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
@@ -715,18 +731,18 @@ export class Chat extends DurableObject {
       if (arg) await this.st.put("pendingStart", arg);
       if (cq) await this.tgx("answerCallbackQuery", { callback_query_id: cq.id });
       await this.joinPrompt();
-      if (isNew) await this.sendActiveAds(uid);
+      if (isNew) await this.sendActiveAds(uid, missed);
       return;
     }
     if (m) await this.onMessage(m);
     else if (cq) await this.onCallback(cq);
-    if (isNew) await this.sendActiveAds(uid);
+    if (isNew) await this.sendActiveAds(uid, missed);
   }
 
   // Yangi foydalanuvchiga barcha faol reklamalarni yuborish
-  async sendActiveAds(uid) {
+  async sendActiveAds(uid, list) {
     const store = this.store();
-    for (const ad of await store.activeAds()) {
+    for (const ad of list || (await store.activeAds())) {
       const r = await copyAd(this.env, this.chatId, ad);
       if (!r.ok) continue;
       if (ad.pin && r.msgs[0]) await this.tgx("pinChatMessage", { chat_id: this.chatId, message_id: r.msgs[0], disable_notification: true });
@@ -907,7 +923,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · kanalga joylash ixtiyoriy</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · reklama tuzatildi</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2171,7 +2187,9 @@ export class Caster extends DurableObject {
       }
       const rows = [];
       let wait = 1100;
+      const already = new Set(await store.deliveredTo(ad.id, users));
       for (const uid of users) {
+        if (already.has(uid)) { job.ok++; job.after = uid; continue; }
         const r = await copyAd(this.env, uid, ad);
         if (r.ok) {
           if (ad.pin && r.msgs[0]) await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.msgs[0], disable_notification: true });
