@@ -904,6 +904,8 @@ export class Chat extends DurableObject {
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
+        case "version":
+          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · testlarni o'chirish</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
