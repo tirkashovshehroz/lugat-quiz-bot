@@ -275,8 +275,18 @@ export class Store extends DurableObject {
     this.sql.exec(`UPDATE quizzes SET ${field}=? WHERE id=? AND owner=?`, value, id, owner);
     return true;
   }
-  listQuizzes(owner) {
-    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT 30", owner).toArray();
+  listQuizzes(owner, offset = 0, n = 30) {
+    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
+  }
+  countQuizzes(owner) {
+    return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=?", owner).toArray()[0]?.n || 0;
+  }
+  // Foydalanuvchining barcha testlarini o'chirish (natijalari bilan); kanal postlari qaytariladi
+  deleteAllQuizzes(owner) {
+    const own = this.sql.exec("SELECT id, chanMsg FROM quizzes WHERE owner=?", owner).toArray();
+    for (const q of own) this.sql.exec("DELETE FROM results WHERE qid=?", q.id);
+    this.sql.exec("DELETE FROM quizzes WHERE owner=?", owner);
+    return { n: own.length, posts: own.map((q) => q.chanMsg).filter(Boolean) };
   }
   catalog(owner, offset, n) {
     return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? AND public=1 AND status='ok' ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
@@ -1212,12 +1222,26 @@ export class Chat extends DurableObject {
     if (r.ok) await this.store().setChanMsg(quiz.id, r.result.message_id);
   }
 
-  async myTests(owner) {
-    const rows = await this.store().listQuizzes(owner);
-    if (!rows.length) return this.send("Hali test yo'q. Faylni yuboring yoki /newquiz 📄");
-    return this.send("📚 Sizning testlaringiz:", {
-      reply_markup: kb(rows.map((r) => [btn(`🎲 ${r.title} · ${r.count} savol`, `open:${r.id}`)])),
-    });
+  async myTests(owner, page = 0, editId) {
+    const PER = 10;
+    const store = this.store();
+    const total = await store.countQuizzes(owner);
+    if (!total) {
+      const t = "Hali test yo'q. Faylni yuboring yoki /newquiz 📄";
+      return editId ? this.edit(editId, t, { reply_markup: kb([]) }) : this.send(t);
+    }
+    const pages = Math.ceil(total / PER);
+    page = Math.min(Math.max(0, page), pages - 1);
+    const rows = await store.listQuizzes(owner, page * PER, PER);
+    const kbRows = rows.map((r) => [btn(`🎲 ${r.title} · ${r.count} savol`.slice(0, 56), `open:${r.id}`), btn("🗑", `mdel:${r.id}:${page}`)]);
+    const nav = [];
+    if (page > 0) nav.push(btn("⬅️ Oldingi", `mypg:${page - 1}`));
+    if (page < pages - 1) nav.push(btn("Keyingi ➡️", `mypg:${page + 1}`));
+    if (nav.length) kbRows.push(nav);
+    kbRows.push([btn(`🗑 Hammasini o'chirish (${total})`, "mdall")]);
+    const text = `📚 <b>Sizning testlaringiz</b> (${total} ta)` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
+      "\n\nTestni ochish uchun nomini bosing, o'chirish uchun yonidagi 🗑 ni bosing.";
+    return editId ? this.edit(editId, text, { reply_markup: kb(kbRows) }) : this.send(text, { reply_markup: kb(kbRows) });
   }
 
   async showCard(quiz, uid, editId) {
@@ -1591,6 +1615,37 @@ export class Chat extends DurableObject {
         await answer("Test yaratildi!");
         return this.finishCreate(create, uid, msgId, cq.from);
       }
+    }
+
+    // Testlarim: ro'yxatdan o'chirish
+    if (kind === "mypg") { await answer(); return this.myTests(uid, +val || 0, msgId); }
+    if (kind === "mdel" || kind === "mdelok") {
+      const [id, pg] = val.split(":");
+      const quiz = await store.getQuiz(id);
+      if (!quiz || quiz.owner !== uid) { await answer("Test topilmadi", true); return this.myTests(uid, +pg || 0, msgId); }
+      if (kind === "mdel") {
+        await answer();
+        return this.edit(msgId, `🗑 <b>${esc(quiz.title)}</b> testini o'chirasizmi?\nNatijalar va testlar kanalidagi posti ham o'chadi.`,
+          { reply_markup: kb([[btn("🗑 Ha, o'chirish", `mdelok:${id}:${pg}`), btn("⬅️ Yo'q", `mypg:${pg}`)]]) });
+      }
+      if (quiz.chanMsg && this.env.TESTS_CHANNEL) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+      await store.deleteQuiz(id, uid);
+      await answer("🗑 O'chirildi");
+      return this.myTests(uid, +pg || 0, msgId);
+    }
+    if (kind === "mdall") {
+      await answer();
+      const n = await store.countQuizzes(uid);
+      return this.edit(msgId, `⚠️ <b>Barcha ${n} ta testingiz</b> o'chirilsinmi?\n\nNatijalar va testlar kanalidagi postlar ham o'chadi. Buni qaytarib bo'lmaydi.`,
+        { reply_markup: kb([[btn("🗑 Ha, hammasini o'chirish", "mdallok")], [btn("⬅️ Yo'q, orqaga", "mypg:0")]]) });
+    }
+    if (kind === "mdallok") {
+      const res = await store.deleteAllQuizzes(uid);
+      if (this.env.TESTS_CHANNEL)
+        for (let i = 0; i < res.posts.length; i += 100)
+          await this.tgx("deleteMessages", { chat_id: this.env.TESTS_CHANNEL, message_ids: res.posts.slice(i, i + 100) });
+      await answer("🗑 O'chirildi");
+      return this.edit(msgId, `🗑 ${res.n} ta test o'chirildi.`, { reply_markup: kb([]) });
     }
 
     // Test kartasi va tahrirlash

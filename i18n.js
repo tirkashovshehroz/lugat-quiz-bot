@@ -69,6 +69,10 @@ const EXACT = {
   "↩️ Oxirgisini o'chirish": ["↩️ Удалить последний", "↩️ Undo last", "↩️ Sonuncuyu sil"],
   "❌ Bekor qilish": ["❌ Отмена", "❌ Cancel", "❌ İptal"],
   "Ha, o'chirish": ["Да, удалить", "Yes, delete", "Evet, sil"],
+  "🗑 Ha, o'chirish": ["🗑 Да, удалить", "🗑 Yes, delete", "🗑 Evet, sil"],
+  "⬅️ Yo'q": ["⬅️ Нет", "⬅️ No", "⬅️ Hayır"],
+  "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
+  "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
   "⚠️ Shikoyat qilish": ["⚠️ Пожаловаться", "⚠️ Report", "⚠️ Şikayet et"],
   "✅ Tayyorman!": ["✅ Я готов!", "✅ I'm ready!", "✅ Hazırım!"],
@@ -279,6 +283,13 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/📚 <b>Sizning testlaringiz<\/b> \((\d+) ta\)/g, "📚 <b>Ваши тесты</b> ($1)", "📚 <b>Your quizzes</b> ($1)", "📚 <b>Testleriniz</b> ($1)"],
+  [/ — (\d+)\/(\d+)-sahifa/g, " — стр. $1/$2", " — page $1/$2", " — sayfa $1/$2"],
+  [/Testni ochish uchun nomini bosing, o'chirish uchun yonidagi 🗑 ni bosing\./g, "Нажмите на название, чтобы открыть тест, или 🗑 рядом, чтобы удалить.", "Tap a title to open the quiz, or 🗑 next to it to delete.", "Testi açmak için adına, silmek için yanındaki 🗑'e basın."],
+  [/🗑 Hammasini o'chirish \((\d+)\)/g, "🗑 Удалить все ($1)", "🗑 Delete all ($1)", "🗑 Hepsini sil ($1)"],
+  [/🗑 <b>(.*?)<\/b> testini o'chirasizmi\?\nNatijalar va testlar kanalidagi posti ham o'chadi\./g, "🗑 Удалить тест <b>$1</b>?\nРезультаты и пост в канале тестов тоже удалятся.", "🗑 Delete the quiz <b>$1</b>?\nIts results and tests-channel post will be deleted too.", "🗑 <b>$1</b> testi silinsin mi?\nSonuçlar ve test kanalındaki gönderi de silinir."],
+  [/⚠️ <b>Barcha (\d+) ta testingiz<\/b> o'chirilsinmi\?\n\nNatijalar va testlar kanalidagi postlar ham o'chadi\. Buni qaytarib bo'lmaydi\./g, "⚠️ Удалить <b>все $1 тестов</b>?\n\nРезультаты и посты в канале тестов тоже удалятся. Это нельзя отменить.", "⚠️ Delete <b>all $1 of your quizzes</b>?\n\nResults and tests-channel posts will be deleted too. This can't be undone.", "⚠️ <b>Tüm $1 testiniz</b> silinsin mi?\n\nSonuçlar ve test kanalındaki gönderiler de silinir. Bu geri alınamaz."],
+  [/🗑 (\d+) ta test o'chirildi\./g, "🗑 Удалено тестов: $1.", "🗑 $1 quizzes deleted.", "🗑 $1 test silindi."],
   [/🏁 <b>(.*?)<\/b> testi yakunlandi!/g, "🏁 Тест <b>$1</b> завершён!", "🏁 Quiz <b>$1</b> is over!", "🏁 <b>$1</b> testi bitti!"],
   [/🎲 <b>(.*?)<\/b> testiga tayyorlaning/g, "🎲 Приготовьтесь к тесту <b>$1</b>", "🎲 Get ready for the quiz <b>$1</b>", "🎲 <b>$1</b> testine hazırlanın"],
   [/🏁 Kamida (\d+) kishi «Tayyorman» tugmasini bosganda test boshlanadi\./g, "🏁 Тест начнётся, когда минимум $1 человека нажмут «Я готов».", "🏁 The quiz starts when at least $1 people press «I'm ready».", "🏁 En az $1 kişi «Hazırım»a bastığında test başlar."],
