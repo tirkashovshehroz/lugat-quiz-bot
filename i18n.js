@@ -250,6 +250,11 @@ const LIT = [
   ["— xatolar", "— ошибки", "— mistakes", "— hatalar"],
   ["⬆️ Rasmdagi savolga javob bering", "⬆️ Ответьте на вопрос с картинки", "⬆️ Answer the question in the image", "⬆️ Resimdeki soruyu cevaplayın"],
   ["⬆️ Yuqoridagi savolga javob bering", "⬆️ Ответьте на вопрос выше", "⬆️ Answer the question above", "⬆️ Yukarıdaki soruyu cevaplayın"],
+  // Havola taqiqi
+  ["🚫 Testda havola yoki kanal/username topildi:", "🚫 В тесте найдена ссылка или канал/username:", "🚫 A link or channel/username was found in the quiz:", "🚫 Testte bağlantı veya kanal/kullanıcı adı bulundu:"],
+  ["Testlar orqali kanal, guruh yoki sayt reklama qilish mumkin emas. Havolalarni olib tashlab, qaytadan yuboring.", "Рекламировать каналы, группы или сайты через тесты нельзя. Удалите ссылки и отправьте заново.", "Advertising channels, groups or websites through quizzes is not allowed. Remove the links and send it again.", "Testler aracılığıyla kanal, grup veya site reklamı yapılamaz. Bağlantıları kaldırıp tekrar gönderin."],
+  ["Botda reklama berish uchun: /reklama", "Для рекламы в боте: /reklama", "To advertise in the bot: /reklama", "Botta reklam vermek için: /reklama"],
+  ["❌ Test yaratilmadi.", "❌ Тест не создан.", "❌ The quiz was not created.", "❌ Test oluşturulmadı."],
   // Tilni tanlash
   ["🌐 Tilni tanlang", "🌐 Выберите язык", "🌐 Choose your language", "🌐 Dilinizi seçin"],
   ["✅ Til o'zgartirildi.", "✅ Язык изменён.", "✅ Language changed.", "✅ Dil değiştirildi."],

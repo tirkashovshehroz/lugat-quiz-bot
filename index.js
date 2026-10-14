@@ -163,6 +163,19 @@ const BAD_WORDS = [
   "terror", "террор", "jihod", "джихад", "bomba yasash", "portlovchi", "взрывчат", "qurol sotish", "оружие купить",
   "kazino", "казино", "casino", "1xbet", "stavka qil", "ставки на спорт",
 ];
+// Havolalar va kanal/username reklamasi: https://..., t.me/..., @kanal, sayt.uz va h.k.
+const LINK_RE = /(https?:\/\/\S+|www\.\S+|\b(?:t|telegram)\.(?:me|dog)\/\S*|tg:\/\/\S+|(?<![\w.])@[a-z][a-z0-9_]{3,}|\b[a-z0-9-]{2,}\.(?:com|uz|ru|org|net|me|io|info|xyz|site|online|tj|kz|kg|tr)\b)/i;
+export function findLink(texts) {
+  for (const t of texts) {
+    const m = typeof t === "string" && t.match(LINK_RE);
+    if (m) return m[0].slice(0, 60);
+  }
+  return null;
+}
+const LINK_MSG = "🚫 Testda havola yoki kanal/username topildi: <code>{x}</code>\n" +
+  "Testlar orqali kanal, guruh yoki sayt reklama qilish mumkin emas. Havolalarni olib tashlab, qaytadan yuboring.\n" +
+  "Botda reklama berish uchun: /reklama";
+
 export function badWord(texts) {
   const t = " " + texts.filter(Boolean).join(" ").toLowerCase().replace(/[‘’`ʻ]/g, "'") + " ";
   return BAD_WORDS.find((w) => t.includes(w)) || null;
@@ -459,6 +472,14 @@ export class Chat extends DurableObject {
     }
     return tg(this.env, method, body);
   }
+  // Muallifdan boshqalar uchun havola tekshiruvi: topilsa — rad etib xabar beradi
+  async rejectLinks(texts) {
+    if (this.isAuthor(this.from)) return false;
+    const x = findLink(texts);
+    if (!x) return false;
+    await this.send(LINK_MSG.replace("{x}", esc(x)));
+    return true;
+  }
   T(s) {
     return tr(this.lang, s);
   }
@@ -564,6 +585,7 @@ export class Chat extends DurableObject {
     const isPrivate = (m?.chat || cq?.message?.chat)?.type === "private";
     const uid = (m || cq)?.from?.id;
     await this.loadLang((m || cq)?.from);
+    this.from = (m || cq)?.from;
     if (cq?.data?.startsWith("lang:")) return this.onLangPick(cq);
     if (isPrivate && (await this.st.get("banned"))) {
       if (cq) await this.tgx("answerCallbackQuery", { callback_query_id: cq.id, text: "🚫 Siz botdan bloklangansiz", show_alert: true });
@@ -821,10 +843,12 @@ export class Chat extends DurableObject {
       return this.askDirection();
     }
     if (create?.step === "title") {
+      if (await this.rejectLinks([text])) return;
       create.title = text.trim().slice(0, 100);
       return this.askDesc(create);
     }
     if (create?.step === "desc") {
+      if (await this.rejectLinks([text])) return;
       create.description = text.trim().slice(0, 300);
       return this.askTimer(create);
     }
@@ -846,6 +870,7 @@ export class Chat extends DurableObject {
       return this.send("❗ So'rovnomani <b>«Viktorina»</b> (Quiz) rejimida yarating va to'g'ri javobni belgilang.");
     if (poll.correct_option_id == null)
       return this.send("❗ To'g'ri javob ko'rinmadi. Viktorinani boshqa joydan forward qilmang — shu chatning o'zida 📎 → So'rovnoma orqali yarating.");
+    if (await this.rejectLinks([poll.question, poll.explanation, ...poll.options.map((o) => o.text)])) return;
     const man = (await this.st.get("manual")) || { questions: [], pendingImg: null };
     const q = { q: poll.question.slice(0, 280), opts: poll.options.map((o) => o.text.slice(0, 100)), correct: poll.correct_option_id };
     if (poll.explanation) q.exp = poll.explanation.slice(0, EXP_MAX);
@@ -909,6 +934,9 @@ export class Chat extends DurableObject {
   async beginCreate(parsed, fallbackTitle) {
     // Tayyor test savollari (istalgan fan)
     const mcq = parsed.mcq;
+    const content = [parsed.title, mcq?.title, ...(mcq?.questions || []).flatMap((q) => [q.q, q.exp, ...q.opts]),
+      ...parsed.pairs.flatMap((p) => [p[0], p[1]])];
+    if (await this.rejectLinks(content)) { await this.st.delete("create"); return; }
     if (mcq && mcq.questions.length >= 2 && mcq.questions.length >= parsed.pairs.length / 3) {
       const title = (mcq.title || fallbackTitle).slice(0, 60);
       let head = `📄 <b>${esc(title)}</b>\n✅ ${mcq.questions.length} ta test savoli topildi (variantlari va to'g'ri javoblari bilan).`;
@@ -980,6 +1008,11 @@ export class Chat extends DurableObject {
   }
 
   async finishCreate(create, uid, msgId, from = { id: uid }) {
+    if (await this.rejectLinks([create.title, create.description,
+      ...(create.pairs || []).flatMap((x) => Array.isArray(x) ? x : [x.q, x.exp, ...(x.opts || [])])])) {
+      await this.st.delete("create");
+      return this.edit(msgId, "❌ Test yaratilmadi.");
+    }
     let questions, pairs = create.pairs, direction = create.direction || "fwd";
     if (create.mcq) {
       // Tayyor savollar: kerakli sonini tanlab, asl tartibini saqlaymiz
@@ -1129,6 +1162,7 @@ export class Chat extends DurableObject {
     if (ed.field === "qexp") {
       const v = text.trim();
       if (v.length > EXP_MAX) return this.send(`❗ Izoh ${EXP_MAX} belgidan oshmasin (hozir ${v.length}). Qisqaroq yozing.`);
+      if (await this.rejectLinks([v])) return;
       if (!this.isAuthor(from) && badWord([v])) return this.send("❗ Bu matnda bot qoidalariga to'g'ri kelmaydigan so'z bor. Boshqacha yozing.");
       await this.st.delete("edit");
       await this.store().updateQuestion(ed.id, uid, ed.idx, { exp: v === "-" ? null : v });
@@ -1139,6 +1173,7 @@ export class Chat extends DurableObject {
     const field = ed.field === "title" ? "title" : "description";
     const value = text.trim() === "/skip" || text.trim() === "-" ? "" : text.trim().slice(0, field === "title" ? 100 : 300);
     if (field === "title" && !value) return this.send("Nom bo'sh bo'lishi mumkin emas.");
+    if (await this.rejectLinks([value])) return;
     if (!this.isAuthor(from) && badWord([value]))
       return this.send("❗ Bu matnda bot qoidalariga to'g'ri kelmaydigan so'z bor. Boshqacha yozing.");
     const store = this.store();
