@@ -572,6 +572,19 @@ export class Chat extends DurableObject {
       [btn(`🗂 Namuna fayllar (${n})`, "g:smp")]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
   }
+  // Muallif uchun: yo'riqnoma bo'limi (yuklab olish + almashtirish + o'chirish)
+  async guideAdmin(kind, editId) {
+    const key = kind === "fmt" ? "fguide" : "guide";
+    const fid = await this.store().getSetting(key);
+    const name = kind === "fmt" ? "📘 <b>Test fayli qanday bo'lishi kerak</b>" : "📖 <b>Bot yo'riqnomasi</b>";
+    const text = `${name}\n\nHolati: ${fid ? "✅ yuklangan" : "❌ hali yuklanmagan"}\n\n` +
+      "📥 — foydalanuvchilar ko'radigandek yuklab olish\n🔄 — yangisini yuklash (eskisi o'chadi)\n🗑 — o'chirish";
+    const rows = [];
+    if (fid) rows.push([btn("📥 Yuklab olish", `g:get${kind}`)]);
+    rows.push([btn(fid ? "🔄 Almashtirish" : "➕ Fayl yuklash", `mt:set:${key}`)].concat(fid ? [btn("🗑 O'chirish", `mt:del:${key}`)] : []));
+    rows.push([btn("⬅️ Orqaga", "g:menu")]);
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
   async sendGuide(kind = "bot") {
     const key = kind === "fmt" ? "fguide" : "guide";
     const fid = await this.store().getSetting(key);
@@ -582,10 +595,17 @@ export class Chat extends DurableObject {
   }
   async samplesMenu(editId) {
     const list = await this.samples();
-    if (!list.length) return this.send("🗂 Namuna fayllar hali yuklanmagan.");
-    const rows = list.map((s, i) => [btn(`📄 ${s.title}`.slice(0, 60), `smp:${i}`)]);
-    rows.push([btn("📦 Hammasini yuborish", "smp:all")], [btn("⬅️ Orqaga", "g:menu")]);
-    const text = "🗂 <b>Namuna fayllar</b>\n\nFaylni tanlang — u sizga yuboriladi. Shu fayllardagidek tuzib yuborsangiz, bot testni o'zi yaratadi.";
+    const adm = this.isAuthor(this.from);
+    if (!list.length && !adm) return this.send("🗂 Namuna fayllar hali yuklanmagan.");
+    const rows = list.map((s, i) => [btn(`📄 ${s.title}`.slice(0, adm ? 48 : 60), `smp:${i}`)].concat(adm ? [btn("🗑", `mt:rm:${i}`)] : []));
+    if (list.length) rows.push([btn("📦 Hammasini yuborish", "smp:all")]);
+    if (adm) {
+      rows.push([btn("➕ Namuna qo'shish", "mt:add")]);
+      if (list.length) rows.push([btn("🗑 Barcha namunalarni o'chirish", "mt:rmask")]);
+    }
+    rows.push([btn("⬅️ Orqaga", "g:menu")]);
+    let text = "🗂 <b>Namuna fayllar</b>\n\nFaylni tanlang — u sizga yuboriladi. Shu fayllardagidek tuzib yuborsangiz, bot testni o'zi yaratadi.";
+    if (adm) text += `\n\n👨‍🏫 <i>Muallif rejimi:</i> 📄 — yuklab olish, 🗑 — o'chirish, ➕ — yangi namuna qo'shish.` + (list.length ? "" : "\n\nHozircha namuna yo'q.");
     return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
   }
   sendSample(s) {
@@ -616,7 +636,7 @@ export class Chat extends DurableObject {
       await this.st.delete("awaitMat");
       await store.setSetting(mode, doc.file_id);
       await this.send(mode === "guide" ? "✅ Bot yo'riqnomasi yangilandi. Eskisi o'chirildi." : "✅ Test fayli yo'riqnomasi yangilandi. Eskisi o'chirildi.");
-      return this.materialsMenu();
+      return this.guideAdmin(mode === "guide" ? "bot" : "fmt");
     }
     const list = await this.samples();
     const title = (caption || doc.file_name || "Namuna").replace(/\.[^.]+$/, "").replace(/_/g, " ").trim().slice(0, 50);
@@ -1445,7 +1465,8 @@ export class Chat extends DurableObject {
 
     if (kind === "g") {
       await answer();
-      if (val === "bot" || val === "fmt") return this.sendGuide(val);
+      if (val === "getbot" || val === "getfmt") return this.sendGuide(val.slice(3));
+      if (val === "bot" || val === "fmt") return this.isAuthor(cq.from) ? this.guideAdmin(val, msgId) : this.sendGuide(val);
       if (val === "smp") return this.samplesMenu(msgId);
       return this.guideMenu(msgId);
     }
@@ -1469,7 +1490,12 @@ export class Chat extends DurableObject {
       if (act === "del") {
         await store.setSetting(arg, "");
         await answer("🗑 O'chirildi");
-        return this.materialsMenu(msgId);
+        return this.guideAdmin(arg === "fguide" ? "fmt" : "bot", msgId);
+      }
+      if (act === "rmask") {
+        await answer();
+        return this.edit(msgId, `⚠️ Barcha ${list.length} ta namuna o'chirilsinmi?`,
+          { reply_markup: kb([[btn("🗑 Ha, o'chirish", "mt:rmall"), btn("⬅️ Yo'q", "g:smp")]]) });
       }
       if (act === "add") {
         await this.st.put("awaitMat", "smp");
@@ -1479,18 +1505,18 @@ export class Chat extends DurableObject {
       if (act === "done") {
         await this.st.delete("awaitMat");
         await answer("✅");
-        return this.materialsMenu();
+        return this.samplesMenu();
       }
       if (act === "rm") {
-        list.splice(+arg, 1);
+        const gone = list.splice(+arg, 1)[0];
         await store.setSetting("samples", JSON.stringify(list));
-        await answer("🗑 O'chirildi");
-        return this.materialsMenu(msgId);
+        await answer(gone ? "🗑 O'chirildi: " + gone.title.slice(0, 40) : "🗑");
+        return this.samplesMenu(msgId);
       }
       if (act === "rmall") {
         await store.setSetting("samples", "[]");
         await answer("🗑 O'chirildi");
-        return this.materialsMenu(msgId);
+        return this.samplesMenu(msgId);
       }
       return answer();
     }
