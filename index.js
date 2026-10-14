@@ -5,7 +5,7 @@ import { parseFile, parseText } from "./parse.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
 const MAX_FILE = 20 * 1024 * 1024;
-const MAX_QUESTIONS = 300;
+const MAX_QUESTIONS = 5000;
 const MIN_READY = 2; // guruhda test boshlanishi uchun kerakli "Tayyorman" soni
 const DIRS = { fwd: "So'z → tarjima", rev: "Tarjima → so'z", mix: "Aralash" };
 const TIMERS = [10, 15, 30, 45, 60, 120, 180, 240, 300, 600];
@@ -157,12 +157,13 @@ async function webhookSecret(env) {
 // Taqiqlangan mavzular: erotika, giyohvandlik, qurol, terror, qimor va h.k. (o'zbek, rus, ingliz, turk tillarida).
 // Topilsa test darhol bloklanmaydi — muallif ko'rib chiqishi uchun ushlab turiladi.
 const BAD_WORDS = [
-  "porno", "porn", "xxx", "erotik", "erotic", "эрот", "порн", "секс", "seks", "sex", "hentai", "nude", "naked", "onlyfans",
-  "yalang'och", "yalangoch", "fahsh", "fohisha", "intim", "orgazm", "orgasm", "sikish", "jalab", "qanjiq", "сиськ", "трах", "голая", "голые",
-  "narkotik", "наркот", "giyohvand", "geroin", "героин", "kokain", "кокаин", "marixuana", "марихуан", "amfetamin", "амфетамин", "zakladka", "закладк",
-  "terror", "террор", "jihod", "джихад", "bomba yasash", "portlovchi", "взрывчат", "qurol sotish", "оружие купить",
-  "kazino", "казино", "casino", "1xbet", "stavka qil", "ставки на спорт",
-];
+  // Faqat aniq nojo'ya mazmun. "terror", "narkotik" kabi oddiy lug'at so'zlari bu yerda yo'q —
+  // ular darsliklarda uchraydi va testni bekorga ushlab qolardi.
+  "porno", "porn", "xxx", "erotik", "erotic", "эрот", "порн", "hentai", "nude", "naked", "onlyfans",
+  "yalang'och", "yalangoch", "fohisha", "sikish", "jalab", "qanjiq", "сиськ", "трах",
+  "zakladka", "закладк", "bomba yasash", "qurol sotish", "оружие купить",
+  "1xbet", "stavka qil", "ставки на спорт",
+]
 // Havolalar va kanal/username reklamasi: https://..., t.me/..., @kanal, sayt.uz va h.k.
 const LINK_RE = /(https?:\/\/\S+|www\.\S+|\b(?:t|telegram)\.(?:me|dog)\/\S*|tg:\/\/\S+|(?<![\w.])@[a-z][a-z0-9_]{3,}|\b[a-z0-9-]{2,}\.(?:com|uz|ru|org|net|me|io|info|xyz|site|online|tj|kz|kg|tr)\b)/i;
 export function findLink(texts) {
@@ -184,6 +185,13 @@ function quizTexts(q) {
   const out = [q.title, q.description];
   for (const x of q.questions || []) out.push(x.q, x.exp, ...(x.opts || []));
   return out;
+}
+
+// Bir xil so'zni bir marta qoldirish (bir nechta darsni birlashtirganda)
+function uniqWords(pairs) {
+  const seen = new Set();
+  return pairs.filter((p) => { const k = p[0].toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; })
+    .map((p) => [p[0], p[1]]);
 }
 
 // Lug'atdan savollar tuzish (test yaratilganda bir marta)
@@ -948,26 +956,68 @@ export class Chat extends DurableObject {
     }
     const all = parsed.pairs;
     if (all.length < 4) return this.send("❗ Kamida 4 ta so'z juftligi kerak. Format:\n<code>so'z - tarjima</code>\n\n/help");
-    const title = (parsed.title || fallbackTitle).slice(0, 60);
-    const secs = parsed.sections
-      .map((name, i) => ({ name, i, n: all.filter((p) => p[2] === i).length }))
-      .filter((s) => s.n > 0);
-    if (secs.length > 1) {
-      await this.st.put("create", { all, title, secs, step: "sec" });
-      const rows = secs.map((s) => [btn(`${s.name} (${s.n})`, `sec:${s.i}`)]);
-      rows.push([btn(`📚 Hammasi (${all.length})`, "sec:all")]);
-      return this.send(`📄 <b>${esc(title)}</b>\n📖 ${all.length} ta so'z topildi.\n\nQaysi bo'limdan test tuzamiz?`, { reply_markup: kb(rows) });
+    const lessons = parsed.lessons || [];
+    // Bir nechta darsli kitob: daraja → dars → bo'lim
+    if (lessons.length > 1) {
+      await this.st.put("book", { all, sections: parsed.sections, lessons, title: fallbackTitle.slice(0, 60) });
+      await this.st.delete("create");
+      return this.levelMenu();
     }
-    return this.askCount(all.map((p) => [p[0], p[1]]), title);
+    const title = (parsed.title || fallbackTitle).slice(0, 60);
+    return this.offerSections(all, parsed.sections, title);
+  }
+
+  // Darajalar menyusi (A1, A2, B1 ...)
+  async levelMenu(editId) {
+    const b = await this.st.get("book");
+    if (!b) return this.send("Faylni qayta yuboring");
+    const levels = [...new Set(b.lessons.map((l) => l.level))];
+    const rows = levels.map((lv) => {
+      const idx = b.lessons.map((l, i) => (l.level === lv ? i : -1)).filter((i) => i >= 0);
+      const n = uniqWords(b.all.filter((p) => idx.includes(p[3]))).length;
+      return [btn(`${lv} · ${idx.length} dars · ${n} so'z`, `lv:${lv}`)];
+    });
+    const total = uniqWords(b.all).length;
+    rows.push([btn(`📚 Butun kitob (${total})`, "bk:all")]);
+    const text = `📚 <b>${esc(b.title)}</b>\n📖 ${total} ta so'z, ${b.lessons.length} ta dars.\n\nQaysi darajadan test tuzamiz?`;
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+
+  // Tanlangan darajadagi darslar
+  async lessonMenu(lv, editId) {
+    const b = await this.st.get("book");
+    if (!b) return this.send("Faylni qayta yuboring");
+    const items = b.lessons.map((l, i) => ({ l, i, n: b.all.filter((p) => p[3] === i).length })).filter((x) => x.l.level === lv && x.n > 0);
+    const rows = [];
+    for (let k = 0; k < items.length; k += 2)
+      rows.push(items.slice(k, k + 2).map((x) => btn(`${x.l.name.split(" ")[1]} (${x.n})`, `ls:${x.i}`)));
+    const total = uniqWords(b.all.filter((p) => items.some((x) => x.i === p[3]))).length;
+    rows.push([btn(`📚 Butun ${lv} (${total})`, `bk:${lv}`)], [btn("⬅️ Darajalar", "bk:back")]);
+    const text = `📚 <b>${lv} darajasi</b> — ${items.length} ta dars, ${total} ta so'z.\n\nQaysi darsdan test tuzamiz?`;
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+
+  // Bo'limlarni (Otlar, Fe'llar ...) taklif qilish; bir nechta dars bo'lsa — nomi bo'yicha birlashtiriladi
+  async offerSections(pairs, sections, title, editId) {
+    const named = pairs.map((p) => [p[0], p[1], sections?.[p[2]] ?? null]);
+    const names = [...new Set(named.map((p) => p[2]).filter(Boolean))];
+    if (names.length > 1) {
+      await this.st.put("create", { all: named, title, secNames: names, step: "sec" });
+      const rows = names.map((nm, k) => [btn(`${nm} (${uniqWords(named.filter((p) => p[2] === nm)).length})`, `sec:${k}`)]);
+      rows.push([btn(`📚 Hammasi (${uniqWords(named).length})`, "sec:all")]);
+      const text = `📄 <b>${esc(title)}</b>\n📖 ${uniqWords(named).length} ta so'z topildi.\n\nQaysi bo'limdan test tuzamiz?`;
+      return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+    }
+    return this.askCount(uniqWords(named), title, editId);
   }
 
   async askCount(pairs, title, editId, extra = {}) {
     if (!extra.mcq && pairs.length < 4) return this.send("❗ Bu bo'limda 4 tadan kam so'z bor. Boshqa bo'limni tanlang.");
     await this.st.put("create", { pairs, title, step: "count", mcq: !!extra.mcq });
     const n = pairs.length;
-    const opts = [10, 20, 30, 50].filter((x) => x < n);
+    const opts = [10, 20, 30, 50, 100, 200, 500].filter((x) => x < n).slice(0, 7);
     const text = (extra.head || `📄 <b>${esc(title)}</b>\n📖 <b>${n}</b> ta so'z.`) + "\n\nNechta savol bo'lsin?";
-    const reply_markup = kb([opts.map((x) => btn(String(x), `cnt:${x}`)),
+    const reply_markup = kb([opts.slice(0, 4).map((x) => btn(String(x), `cnt:${x}`)), opts.slice(4).map((x) => btn(String(x), `cnt:${x}`)),
       [btn(`Hammasi (${n})`, `cnt:${n}`), btn("✏️ Boshqa son", "cnt:custom")]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
   }
@@ -1319,6 +1369,21 @@ export class Chat extends DurableObject {
       return this.showCard(await store.getQuiz(quiz.id), uid, msgId);
     }
 
+    if (kind === "lv" || kind === "ls" || kind === "bk") {
+      const b = await this.st.get("book");
+      if (!b) return answer("Faylni qayta yuboring", true);
+      await answer();
+      if (kind === "lv") return this.lessonMenu(val, msgId);
+      if (kind === "bk" && val === "back") return this.levelMenu(msgId);
+      if (kind === "ls") {
+        const i = +val;
+        return this.offerSections(b.all.filter((p) => p[3] === i), b.sections, b.lessons[i]?.name || b.title, msgId);
+      }
+      if (val === "all") return this.offerSections(b.all, b.sections, b.title, msgId);
+      const idx = b.lessons.map((l, i) => (l.level === val ? i : -1)).filter((i) => i >= 0);
+      return this.offerSections(b.all.filter((p) => idx.includes(p[3])), b.sections, `${b.title} — ${val}`, msgId);
+    }
+
     if (kind === "cat") { await answer(); return this.catalog(parseInt(val, 10) || 0, msgId); }
 
     if (kind === "chk") {
@@ -1339,9 +1404,9 @@ export class Chat extends DurableObject {
       if (!create) return answer("Faylni qayta yuboring", true);
       if (kind === "sec") {
         if (!create.all) return answer("Faylni qayta yuboring", true);
-        const s = create.secs.find((x) => String(x.i) === val);
-        const pairs = create.all.filter((p) => !s || p[2] === s.i).map((p) => [p[0], p[1]]);
-        await this.askCount(pairs, s ? `${create.title} — ${s.name}` : create.title, msgId);
+        const nm = val === "all" ? null : create.secNames?.[+val];
+        const pairs = uniqWords(create.all.filter((p) => !nm || p[2] === nm));
+        await this.askCount(pairs, nm ? `${create.title} — ${nm}` : create.title, msgId);
         return answer();
       }
       if (!create.pairs) return answer("Faylni qayta yuboring", true);

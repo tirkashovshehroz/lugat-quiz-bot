@@ -26,7 +26,7 @@ function dedupe(pairs) {
   const seen = new Set();
   const out = [];
   for (const p of pairs) {
-    const k = p[0].toLowerCase();
+    const k = (p[3] ?? "") + "|" + p[0].toLowerCase(); // har bir dars ichida takrorlanmasin
     if (!seen.has(k)) {
       seen.add(k);
       out.push(p);
@@ -40,7 +40,7 @@ export function parseText(text) {
 }
 
 // ---------- Tuzilmali matn: sarlavha (A1 1-DARS), bo'limlar (OTLAR / FE'LLAR), raqamli ro'yxat ----------
-const TITLE = /^([ABC][12])\s*[-–.]?\s*(\d+)\s*[-–.]?\s*DARS\b/i;
+const TITLE = /^([ABC][12])\s*[-–.]?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*[-–.]?\s*DARS\b/i;
 const PURE_NUM = /^\d{1,4}$/;
 const NUMBERED = /^\s*\d+\s*[.)]?\s+\S/;
 
@@ -67,20 +67,32 @@ export function parseLines(rawLines) {
   const numbered = sepLines.length > 0 && sepLines.filter((l) => NUMBERED.test(l)).length >= sepLines.length * 0.6;
   let title = null;
   const sections = [];
-  let sec = -1;
+  const lessons = []; // [{ level: "A1", name: "A1 1-dars" }]
+  let sec = -1, les = -1;
   const pairs = [];
   let last = null;
   for (let i = 0; i < lines.length; i++) {
-    const line = numbered ? lines[i].replace(/^\d+\s*[.)]?\s+/, "") : lines[i];
-    const isNum = NUMBERED.test(lines[i]) || lines[i].includes("\t"); // jadval qatori ham alohida yozuv
+    let raw = lines[i];
+    // Dars sarlavhasi (A1 1-DARS); yonida so'z qo'shilib qolgan bo'lsa — uni alohida qayta ishlaymiz
+    const tm0 = raw.match(TITLE);
+    if (tm0) {
+      const name = `${tm0[1].toUpperCase()} ${tm0[2].replace(/\s+/g, "")}-dars`;
+      lessons.push({ level: tm0[1].toUpperCase(), name });
+      les = lessons.length - 1;
+      sec = -1;
+      title ??= name;
+      last = null;
+      raw = raw.slice(tm0[0].length).trim();
+      if (!raw) continue;
+    }
+    const line = numbered ? raw.replace(/^\d+\s*[.)]?\s+/, "") : raw;
+    const isNum = NUMBERED.test(raw) || raw.includes("\t"); // jadval qatori ham alohida yozuv
     if (PURE_NUM.test(lines[i])) {
       // so'z raqami (ikki qatorli yozuvda) — davom etadi; sahifa raqami — zanjirni uzadi
       if (last?.wait) last.wait = false;
       else last = null;
       continue;
     }
-    const tm = line.match(TITLE);
-    if (tm) { title ??= `${tm[1].toUpperCase()} ${tm[2]}-dars`; last = null; continue; }
     if (isHeader(line)) {
       sections.push(sectionName(line));
       sec = sections.length - 1;
@@ -90,18 +102,18 @@ export function parseLines(rawLines) {
     if (/@|https?:|t\.me\//i.test(line)) { last = null; continue; }
     const p = splitLine(line);
     if (!numbered) {
-      if (p) pairs.push([tidy(p[0]), tidy(p[1]), sec]);
+      if (p) pairs.push([tidy(p[0]), tidy(p[1]), sec, les]);
       continue;
     }
     const startsEntry = isNum || (p && PURE_NUM.test(lines[i + 1] || ""));
     if (p && startsEntry) {
-      const e = [tidy(p[0]), tidy(p[1]), sec];
+      const e = [tidy(p[0]), tidy(p[1]), sec, les];
       pairs.push(e);
       last = { e, wait: !isNum };
     } else if (last) last.e[1] = tidy(last.e[1] + " " + line);
     else last = null;
   }
-  return { pairs: dedupe(pairs), title, sections };
+  return { pairs: dedupe(pairs), title, sections, lessons };
 }
 
 function decode(bytes) {

@@ -250,6 +250,10 @@ const LIT = [
   ["— xatolar", "— ошибки", "— mistakes", "— hatalar"],
   ["⬆️ Rasmdagi savolga javob bering", "⬆️ Ответьте на вопрос с картинки", "⬆️ Answer the question in the image", "⬆️ Resimdeki soruyu cevaplayın"],
   ["⬆️ Yuqoridagi savolga javob bering", "⬆️ Ответьте на вопрос выше", "⬆️ Answer the question above", "⬆️ Yukarıdaki soruyu cevaplayın"],
+  // Kitob: daraja va darslar
+  ["Qaysi darajadan test tuzamiz?", "Из какого уровня сделать тест?", "Which level should the quiz use?", "Hangi seviyeden test yapalım?"],
+  ["Qaysi darsdan test tuzamiz?", "Из какого урока сделать тест?", "Which lesson should the quiz use?", "Hangi dersten test yapalım?"],
+  ["⬅️ Darajalar", "⬅️ Уровни", "⬅️ Levels", "⬅️ Seviyeler"],
   // Havola taqiqi
   ["🚫 Testda havola yoki kanal/username topildi:", "🚫 В тесте найдена ссылка или канал/username:", "🚫 A link or channel/username was found in the quiz:", "🚫 Testte bağlantı veya kanal/kullanıcı adı bulundu:"],
   ["Testlar orqali kanal, guruh yoki sayt reklama qilish mumkin emas. Havolalarni olib tashlab, qaytadan yuboring.", "Рекламировать каналы, группы или сайты через тесты нельзя. Удалите ссылки и отправьте заново.", "Advertising channels, groups or websites through quizzes is not allowed. Remove the links and send it again.", "Testler aracılığıyla kanal, grup veya site reklamı yapılamaz. Bağlantıları kaldırıp tekrar gönderin."],
@@ -281,6 +285,12 @@ const RX = [
   [/⚠️ (\d+) ta savolda to'g'ri javob ko'rsatilmagan — ular qo'shilmadi\./g, "⚠️ В $1 вопр. не указан правильный ответ — они пропущены.", "⚠️ $1 questions have no correct answer marked — they were skipped.", "⚠️ $1 soruda doğru cevap belirtilmemiş — eklenmedi."],
   [/📖 (\d+) ta so'z topildi\./g, "📖 Найдено слов: $1.", "📖 Found $1 words.", "📖 $1 kelime bulundu."],
   [/📖 <b>(\d+)<\/b> ta so'z\./g, "📖 Слов: <b>$1</b>.", "📖 <b>$1</b> words.", "📖 <b>$1</b> kelime."],
+  [/📚 Butun kitob \((\d+)\)/g, "📚 Вся книга ($1)", "📚 Whole book ($1)", "📚 Tüm kitap ($1)"],
+  [/📚 Butun ([ABC][12]) \((\d+)\)/g, "📚 Весь $1 ($2)", "📚 All of $1 ($2)", "📚 Tüm $1 ($2)"],
+  [/([ABC][12]) · (\d+) dars · (\d+) so'z/g, "$1 · уроков: $2 · слов: $3", "$1 · $2 lessons · $3 words", "$1 · $2 ders · $3 kelime"],
+  [/📖 (\d+) ta so'z, (\d+) ta dars\./g, "📖 Слов: $1, уроков: $2.", "📖 $1 words, $2 lessons.", "📖 $1 kelime, $2 ders."],
+  [/📚 <b>([ABC][12]) darajasi<\/b> — (\d+) ta dars, (\d+) ta so'z\./g, "📚 <b>Уровень $1</b> — уроков: $2, слов: $3.", "📚 <b>Level $1</b> — $2 lessons, $3 words.", "📚 <b>$1 seviyesi</b> — $2 ders, $3 kelime."],
+  [/^(\d+(?:-\d+)?)-dars \((\d+)\)$/g, "Урок $1 ($2)", "Lesson $1 ($2)", "$1. ders ($2)"],
   [/📚 Hammasi \((\d+)\)/g, "📚 Все ($1)", "📚 All ($1)", "📚 Hepsi ($1)"],
   [/^Hammasi \((\d+)\)$/g, "Все ($1)", "All ($1)", "Hepsi ($1)"],
   [/Nechta savol\? \(1–(\d+)\) Raqam yozing:/g, "Сколько вопросов? (1–$1) Напишите число:", "How many questions? (1–$1) Type a number:", "Kaç soru? (1–$1) Bir sayı yazın:"],
