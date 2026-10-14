@@ -51,6 +51,7 @@ const ADMIN_COMMANDS = [
   { command: "tests", description: "🗂 Muallif testlari" },
   { command: "reklama", description: "📣 Reklama boshqaruvi" },
   { command: "stat", description: "📊 Bot statistikasi" },
+  { command: "adcheck", description: "🔎 Reklama yetkazilishini tekshirish" },
   { command: "materials", description: "📚 Yo'riqnoma va namunalarni boshqarish" },
   { command: "bans", description: "🚫 Bloklanganlar ro'yxati" },
   { command: "guide", description: "📖 Yo'riqnoma va namunalar" },
@@ -393,6 +394,14 @@ export class Store extends DurableObject {
   markBlocked(uid) {
     this.sql.exec("UPDATE users SET blocked=1 WHERE uid=?", uid);
   }
+  userInfo(uid) {
+    const u = this.sql.exec("SELECT created, blocked FROM users WHERE uid=?", uid).toArray()[0] || null;
+    const ads = this.sql.exec("SELECT id, title, active, (SELECT msgs FROM deliveries d WHERE d.ad=ads.id AND d.uid=?) AS got FROM ads WHERE active=1 ORDER BY id", uid).toArray();
+    return { u, ads };
+  }
+  adDeliveryCounts() {
+    return this.sql.exec("SELECT id, title, sent, fail, (SELECT COUNT(*) FROM deliveries d WHERE d.ad=ads.id) AS have FROM ads WHERE active=1 ORDER BY id").toArray();
+  }
   userStats() {
     const q = (s) => this.sql.exec(s).toArray()[0].n;
     return { users: q("SELECT COUNT(*) AS n FROM users WHERE blocked=0"), blocked: q("SELECT COUNT(*) AS n FROM users WHERE blocked=1"),
@@ -721,10 +730,10 @@ export class Chat extends DurableObject {
     }
     const isNew = missed.length > 0;
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
-    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds2"))) {
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds3"))) {
       await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
       await this.store().setSetting("authorId", String(uid));
-      await this.st.put("adminCmds2", 1);
+      await this.st.put("adminCmds3", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
@@ -854,6 +863,34 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "myid":
+        case "id":
+          return this.send(`🆔 Sizning ID raqamingiz: <code>${m.from.id}</code>`);
+        case "adcheck": {
+          if (!isPrivate || !this.isAuthor(m.from)) return;
+          const store = this.store();
+          const target = +(rest[0] || 0);
+          if (!target) {
+            const st = await store.userStats();
+            const rows = await store.adDeliveryCounts();
+            return this.send(`📊 <b>Reklama tekshiruvi</b>\n\n👥 Faol foydalanuvchilar: ${st.users}\n🚫 Bloklangan deb belgilangan: ${st.blocked}\n\n` +
+              (rows.length ? rows.map((a) => `📣 «${esc(a.title)}»: yetkazilgan ${a.have} ta (hisobot: ${a.sent} ✅ / ${a.fail} ❌)`).join("\n") : "Faol reklama yo'q.") +
+              "\n\nBitta foydalanuvchini tekshirish: <code>/adcheck ID</code>\n(ID ni foydalanuvchi botga /id yozib biladi)");
+          }
+          const info = await store.userInfo(target);
+          let text = `🔎 <b>Foydalanuvchi ${target}</b>\n\n` + (info.u
+            ? `📋 Ro'yxatda bor${info.u.blocked ? " — 🚫 bloklangan deb belgilangan" : " — ✅ faol"}`
+            : "❗ Ro'yxatda yo'q (botga hali /start bosmagan yoki ma'lumotlarini o'chirgan)");
+          for (const a of info.ads) {
+            if (a.got) { text += `\n\n📣 «${esc(a.title)}» — ✅ yetkazilgan (xabar №${JSON.parse(a.got).join(", ")})`; continue; }
+            const ad = await store.getAd(a.id);
+            const r = await copyAd(this.env, target, ad);
+            if (r.ok) { await store.addDeliveries(ad.id, [[target, r.msgs]]); await store.touchUser(target); }
+            text += `\n\n📣 «${esc(a.title)}» — yetkazilmagan edi. Hozir yuborildi: ${r.ok ? "✅ muvaffaqiyatli" : `❌ Telegram javobi: <code>${esc(r.description || String(r.error_code))}</code>`}`;
+          }
+          if (!info.ads.length) text += "\n\nFaol reklama yo'q.";
+          return this.send(text);
+        }
         case "reklama":
         case "ad":
           if (!isPrivate) return;
@@ -923,7 +960,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · reklama tuzatildi</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · reklama tekshiruvi</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
