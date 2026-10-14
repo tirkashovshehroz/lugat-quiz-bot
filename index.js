@@ -654,13 +654,15 @@ export class Chat extends DurableObject {
     const store = this.store();
     const s = await store.userStats();
     const ads = await store.activeAds();
-    const status = await this.env.CASTER.get(this.env.CASTER.idFromName("main")).status();
+    const caster = this.env.CASTER.get(this.env.CASTER.idFromName("main"));
+    await caster.kick(); // navbat qotib qolgan bo'lsa — qayta ishga tushadi
+    const status = await caster.status();
     let text = `📣 <b>Reklama boshqaruvi</b>\n\n👥 Faol foydalanuvchilar: <b>${s.users}</b>\n🚫 Botni bloklaganlar: ${s.blocked}\n`;
     if (status.queue) text += `\n⏳ Navbatda: ${status.queue} ta vazifa${status.progress != null ? ` (hozirgisi: ${status.progress} ta yuborildi)` : ""}\n`;
-    text += ads.length ? `\n<b>Faol reklamalar (${ads.length}):</b>\n` + ads.map((a) =>
-      `${a.pin ? "📌" : "📤"} #${a.id} ${esc(a.title)} — ${a.sent} ta${a.expires ? `, ⏳ ${fmtDate(a.expires)} gacha` : ", muddatsiz"}`).join("\n") +
+    text += ads.length ? `\n<b>Faol reklamalar (${ads.length}):</b>\n` + ads.map((a, i) =>
+      `${i + 1}. ${a.pin ? "📌" : "📤"} ${esc(a.title)} — ${a.sent} kishiga yetgan${a.expires ? `, ⏳ ${fmtDate(a.expires)} gacha` : ", muddatsiz"}`).join("\n") +
       "\n\nYangi foydalanuvchilar barcha faol reklamalarni avtomatik oladi." : "\nHozir faol reklama yo'q.";
-    const rows = [[btn("➕ Yangi reklama", "ad:new")], ...ads.map((a) => [btn(`🗑 #${a.id} ${a.title}`.slice(0, 60), `adrm:${a.id}`)]),
+    const rows = [[btn("➕ Yangi reklama", "ad:new")], ...ads.map((a, i) => [btn(`🗑 ${i + 1}. ${a.title}`.slice(0, 60), `adrm:${a.id}`)]),
       [btn("🔄 Yangilash", "ad:menu")]];
     return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
   }
@@ -1189,7 +1191,7 @@ export class Chat extends DurableObject {
           expires: days ? Date.now() + days * 86400e3 : null });
         const pos = await caster.enqueue({ type: "send", ad: id, admin: this.chatId });
         await answer("Navbatga qo'shildi!");
-        return this.edit(msgId, `✅ Reklama #${id} «${esc(d.title)}» ${pos > 1 ? `navbatga qo'shildi (${pos}-o'rinda)` : "tarqatilmoqda"}.` +
+        return this.edit(msgId, `✅ «${esc(d.title)}» reklamasi ${pos > 1 ? `navbatga qo'shildi (${pos}-o'rinda)` : "tarqatilmoqda"}.` +
           `\n${mode === "pin" ? "📌 Qadaladi." : "📤 Post qilib yuboriladi."} ⏳ ${days ? `${days} kun (${fmtDate(Date.now() + days * 86400e3)} gacha)` : "Muddatsiz"}` +
           "\nTugagach xabar beraman. Boshqaruv: /reklama");
       }
@@ -1197,7 +1199,7 @@ export class Chat extends DurableObject {
         const ad = await store.getAd(+val);
         if (!ad || !ad.active) { await answer("Bu reklama allaqachon o'chirilgan"); return this.adMenu(msgId); }
         await answer();
-        return this.edit(msgId, `🗑 #${ad.id} «${esc(ad.title)}» reklamasini barcha chatlardan olib tashlaymizmi?`,
+        return this.edit(msgId, `🗑 «${esc(ad.title)}» reklamasini barcha chatlardan olib tashlaymizmi?`,
           { reply_markup: kb([[btn("Ha, olib tashlash", `adrmok:${ad.id}`), btn("Yo'q", "ad:menu")]]) });
       }
       if (kind === "adrmok") {
@@ -1755,7 +1757,10 @@ const fmtDate = (t) => {
 };
 
 // ---------------- Reklama tarqatuvchi (navbat bilan, Telegram limitlariga mos) ----------------
-const BATCH = 25;
+// Cloudflare bepul tarifida bitta ishga tushishda ~50 ta tashqi so'rov mumkin.
+// Har bir foydalanuvchiga 2 tagacha so'rov (yuborish + qadash) ketadi, shuning uchun kichik bo'laklarda ishlaymiz.
+const BATCH = 8;
+const MAX_ERRORS = 5;
 export class Caster extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -1775,16 +1780,38 @@ export class Caster extends DurableObject {
   // Vazifani navbatga qo'shish; navbatdagi o'rnini qaytaradi
   async enqueue(job) {
     const q = (await this.st.get("queue")) || [];
-    q.push({ ...job, after: 0, ok: 0, fail: 0, started: Date.now() });
+    q.push({ ...job, after: 0, ok: 0, fail: 0, blocked: 0, started: Date.now() });
     await this.st.put("queue", q);
-    if (q.length === 1) await this.st.setAlarm(Date.now() + 200);
+    await this.kick();
     return q.length;
+  }
+  // Navbatda ish bo'lsa — darhol ishga tushirish (qotib qolgan navbatni ham uyg'otadi)
+  async kick() {
+    const q = (await this.st.get("queue")) || [];
+    if (!q.length) return;
+    const a = await this.st.getAlarm();
+    if (!a || a > Date.now() + 3000) await this.st.setAlarm(Date.now() + 200);
   }
   async scheduleExpiry() {
     const t = await this.store().nextExpiry();
     if (t) await this.st.setAlarm(Math.max(Date.now() + 1000, t));
   }
   async alarm() {
+    try {
+      await this.work();
+    } catch (e) {
+      // Xato bo'lsa navbat qotib qolmasin: biroz kutib davom etamiz, takrorlansa — bu bo'lakni o'tkazib yuboramiz
+      console.log("Reklama xatosi", e);
+      const q = (await this.st.get("queue")) || [];
+      if (q[0]) {
+        q[0].errors = (q[0].errors || 0) + 1;
+        if (q[0].errors >= MAX_ERRORS) { q[0].errors = 0; q[0].skipNext = true; }
+        await this.st.put("queue", q);
+      }
+      await this.st.setAlarm(Date.now() + 15000);
+    }
+  }
+  async work() {
     const store = this.store();
     let q = (await this.st.get("queue")) || [];
     // Muddati tugagan reklamalarni o'chirish vazifasiga qo'shamiz
@@ -1806,16 +1833,27 @@ export class Caster extends DurableObject {
     if (!ad) return done();
 
     if (job.type === "send") {
-      if (!ad.active) return done(`ℹ️ #${ad.id} «${esc(ad.title)}» o'chirilgani uchun tarqatish to'xtatildi (${job.ok} taga yetib borgan edi).`);
+      if (!ad.active) return done(`ℹ️ «${esc(ad.title)}» reklamasi o'chirilgani uchun tarqatish to'xtatildi (${job.ok} kishiga yetib borgan edi).`);
       const users = await store.listUsers(job.after, BATCH);
       if (!users.length) {
         await store.adStats(ad.id, job.ok, job.fail);
         const mins = Math.max(1, Math.round((Date.now() - job.started) / 60000));
-        return done(`✅ <b>Reklama #${ad.id} tarqatildi!</b>\n«${esc(ad.title)}»\n\n📤 Yetib bordi: <b>${job.ok}</b>\n🚫 Yetib bormadi (botni bloklagan): ${job.fail}\n⏱ ${mins} daqiqa` +
-          (ad.pin ? "\n📌 Barcha chatlarda tepaga qadaldi." : "") +
+        const other = job.fail - (job.blocked || 0);
+        return done(`✅ <b>Reklama tarqatildi!</b>\n«${esc(ad.title)}»\n\n📤 Yetib bordi: <b>${job.ok}</b>` +
+          `\n🚫 Botni bloklaganlar: ${job.blocked || 0}` + (other > 0 ? `\n⚠️ Boshqa xato: ${other}${job.lastError ? ` (${esc(job.lastError)})` : ""}` : "") +
+          `\n⏱ ${mins} daqiqa` + (ad.pin ? "\n📌 Tepaga qadaldi." : "") +
           (ad.expires ? `\n⏳ ${fmtDate(ad.expires)} da avtomatik olib tashlanadi.` : "") + "\n\nBoshqaruv: /reklama");
       }
+      if (job.skipNext) { // shu bo'lakda takroriy xato — o'tkazib yuboramiz
+        job.skipNext = false;
+        job.fail += users.length;
+        job.after = users[users.length - 1];
+        q[0] = job;
+        await this.st.put("queue", q);
+        return this.st.setAlarm(Date.now() + 1000);
+      }
       const rows = [];
+      let wait = 1100;
       for (const uid of users) {
         const r = await copyAd(this.env, uid, ad);
         if (r.ok) {
@@ -1823,30 +1861,39 @@ export class Caster extends DurableObject {
           rows.push([uid, r.msgs]);
           job.ok++;
         } else if (r.error_code === 429) {
-          break; // Telegram "sekinroq" dedi — shu foydalanuvchidan keyinroq davom etamiz
+          wait = ((r.parameters?.retry_after || 5) + 1) * 1000; // Telegram "sekinroq" dedi — keyinroq shu odamdan davom etamiz
+          break;
+        } else if (r.error_code === 400 && /message to copy not found|message_id_invalid|MESSAGE_ID_INVALID/i.test(r.description || "")) {
+          // Asl post o'chirib yuborilgan — davom etishning ma'nosi yo'q
+          await store.deactivateAd(ad.id);
+          return done("❗ Reklamaning asl posti botdagi chatingizdan o'chirilgan, shuning uchun uni nusxalab bo'lmadi.\n" +
+            `«${esc(ad.title)}» to'xtatildi (${job.ok} kishiga yetib borgan edi). Postni qayta yuborib, yangi reklama qiling: /reklama`);
         } else {
           job.fail++;
-          if (r.error_code === 403 || /chat not found|deactivated|blocked/i.test(r.description || "")) await store.markBlocked(uid);
+          if (r.error_code === 403 || /chat not found|deactivated|blocked/i.test(r.description || "")) {
+            job.blocked = (job.blocked || 0) + 1;
+            await store.markBlocked(uid);
+          } else job.lastError = (r.description || "").slice(0, 80);
         }
         job.after = uid;
-        if (job.ok % 500 === 0 && job.ok && r.ok) await store.adStats(ad.id, job.ok, job.fail);
       }
       if (rows.length) await store.addDeliveries(ad.id, rows);
+      job.errors = 0;
       q[0] = job;
       await this.st.put("queue", q);
-      return this.st.setAlarm(Date.now() + (rows.length < users.length && job.after !== users[users.length - 1] ? 6000 : 1100));
+      return this.st.setAlarm(Date.now() + wait);
     }
 
     if (job.type === "remove") {
       const rows = await store.listDeliveries(ad.id, job.after, BATCH);
       if (!rows.length) {
         await store.clearDeliveries(ad.id);
-        return done(`🗑 Reklama #${ad.id} «${esc(ad.title)}» ${job.ok} ta chatdan olib tashlandi (${job.reason || "o'chirildi"}).`);
+        return done(`🗑 «${esc(ad.title)}» reklamasi ${job.ok} ta chatdan olib tashlandi (${job.reason || "o'chirildi"}).`);
       }
       for (const { uid, msgs } of rows) {
         if (ad.pin && msgs[0]) await tg(this.env, "unpinChatMessage", { chat_id: uid, message_id: msgs[0] });
         const r = await tg(this.env, "deleteMessages", { chat_id: uid, message_ids: msgs });
-        if (r.error_code === 429) break;
+        if (r.error_code === 429) { await this.st.put("queue", q); return this.st.setAlarm(Date.now() + ((r.parameters?.retry_after || 5) + 1) * 1000); }
         job.ok++;
         job.after = uid;
       }
