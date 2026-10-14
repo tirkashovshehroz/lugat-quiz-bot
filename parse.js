@@ -224,8 +224,26 @@ function xlsxLines(files) {
   return lines;
 }
 
+// Sahifa sarlavhasi/pastki yozuvlari: muallif, kanal, profil, havolalar (har sahifada takrorlanadi)
+const HEADER_KEY = /^\s*(?:muallif|tuzuvchi|tayyorlovchi|tayyorladi|o['‘’`ʻ]qituvchi|author|автор|составитель|yazar|hazırlayan|telegram|instagram|youtube|tiktok|facebook|kanal(?:imiz|im)?|канал|guruh(?:imiz)?|группа|tel(?:efon)?|aloqa|контакт|manzil|sayt|website|web)\b[^\n]*[:：]/i;
+const LINK_IN = /(https?:\/\/|www\.|\b(?:t|telegram)\.(?:me|dog)\/|(?<![\w.])@[A-Za-z][A-Za-z0-9_]{3,})/;
+const CONTENT_START = /^\s*(?:\d{1,4}\s*[.)]|[A-Ja-jА-Ка-к]\s*[).]|[*+]\s*[A-Ja-j]\)|javob|to['‘’`ʻ]?g['‘’`ʻ]?ri javob|answer|ответ|cevap|izoh|explanation|⟦IMG)/i;
+function stripHeaders(lines) {
+  const counts = new Map();
+  for (const l of lines) { const k = l.trim(); if (k) counts.set(k, (counts.get(k) || 0) + 1); }
+  return lines.filter((l) => {
+    const t = l.trim();
+    if (!t) return true;
+    if (CONTENT_START.test(t)) return true; // savol, variant va javob qatorlari doim qoladi
+    if (HEADER_KEY.test(t)) return false;
+    if (LINK_IN.test(t)) return false;
+    return true;
+  });
+}
+
 // Lug'at va test savollarini birga tahlil qilish
 function analyze(lines, images = []) {
+  lines = stripHeaders(lines);
   const res = parseLines(lines);
   res.mcq = parseMcq(lines);
   res.images = images;
