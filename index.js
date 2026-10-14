@@ -577,8 +577,10 @@ export class Chat extends DurableObject {
     const key = kind === "fmt" ? "fguide" : "guide";
     const fid = await this.store().getSetting(key);
     const name = kind === "fmt" ? "📘 <b>Test fayli qanday bo'lishi kerak</b>" : "📖 <b>Bot yo'riqnomasi</b>";
+    await this.st.put("awaitMat", key);
     const text = `${name}\n\nHolati: ${fid ? "✅ yuklangan" : "❌ hali yuklanmagan"}\n\n` +
-      "📥 — foydalanuvchilar ko'radigandek yuklab olish\n🔄 — yangisini yuklash (eskisi o'chadi)\n🗑 — o'chirish";
+      `📎 <b>Faylni shu yerga yuboring</b> — u foydalanuvchilar uchun ${fid ? "joylanadi, eskisi o'chadi" : "joylanadi"} (test tuzilmaydi).\n\n` +
+      "📥 — foydalanuvchilar ko'radigandek yuklab olish\n🗑 — o'chirish";
     const rows = [];
     if (fid) rows.push([btn("📥 Yuklab olish", `g:get${kind}`)]);
     rows.push([btn(fid ? "🔄 Almashtirish" : "➕ Fayl yuklash", `mt:set:${key}`)].concat(fid ? [btn("🗑 O'chirish", `mt:del:${key}`)] : []));
@@ -600,12 +602,13 @@ export class Chat extends DurableObject {
     const rows = list.map((s, i) => [btn(`📄 ${s.title}`.slice(0, adm ? 48 : 60), `smp:${i}`)].concat(adm ? [btn("🗑", `mt:rm:${i}`)] : []));
     if (list.length) rows.push([btn("📦 Hammasini yuborish", "smp:all")]);
     if (adm) {
+      await this.st.put("awaitMat", "smp");
       rows.push([btn("➕ Namuna qo'shish", "mt:add")]);
       if (list.length) rows.push([btn("🗑 Barcha namunalarni o'chirish", "mt:rmask")]);
     }
     rows.push([btn("⬅️ Orqaga", "g:menu")]);
     let text = "🗂 <b>Namuna fayllar</b>\n\nFaylni tanlang — u sizga yuboriladi. Shu fayllardagidek tuzib yuborsangiz, bot testni o'zi yaratadi.";
-    if (adm) text += `\n\n👨‍🏫 <i>Muallif rejimi:</i> 📄 — yuklab olish, 🗑 — o'chirish, ➕ — yangi namuna qo'shish.` + (list.length ? "" : "\n\nHozircha namuna yo'q.");
+    if (adm) text += `\n\n👨‍🏫 <i>Muallif rejimi:</i> 📄 — yuklab olish, 🗑 — o'chirish.\n📎 <b>Yangi namuna qo'shish uchun faylni shu yerga yuboring</b> (test tuzilmaydi). Bir nechtasini ketma-ket yuborsa bo'ladi.` + (list.length ? "" : "\n\nHozircha namuna yo'q.");
     return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
   }
   sendSample(s) {
@@ -807,6 +810,7 @@ export class Chat extends DurableObject {
       const [cmd, target] = head.slice(1).split("@");
       if (target && target.toLowerCase() !== (await botName(this.env)).toLowerCase()) return;
       const arg = rest.join(" ");
+      if (isPrivate) await this.st.delete("awaitMat");
       switch (cmd.toLowerCase()) {
         case "start":
           if (isPrivate && !(await this.st.get("lang"))) {
@@ -897,6 +901,7 @@ export class Chat extends DurableObject {
       return;
     }
     if (!isPrivate) return;
+    if (!m.document && (await this.st.get("awaitMat"))) await this.st.delete("awaitMat");
     if (m.document && (await this.st.get("awaitMat")) && this.isAuthor(m.from)) return this.onMaterialFile(m.document, m.caption);
     if (m.document) return this.onFile(m.document);
     if (m.poll) return this.onQuizPoll(m.poll);
@@ -1468,6 +1473,7 @@ export class Chat extends DurableObject {
       if (val === "getbot" || val === "getfmt") return this.sendGuide(val.slice(3));
       if (val === "bot" || val === "fmt") return this.isAuthor(cq.from) ? this.guideAdmin(val, msgId) : this.sendGuide(val);
       if (val === "smp") return this.samplesMenu(msgId);
+      await this.st.delete("awaitMat");
       return this.guideMenu(msgId);
     }
     if (kind === "smp") {
