@@ -453,12 +453,14 @@ function layout(runs, width) {
       if (seg) {
         const gap = r.x - seg.x2;
         const cross = seg.x2 < mid && r.x >= mid - size;
-        if (gap > 2.5 * size || (cross && gap > 0.6 * size)) { pushSeg(cols, seg, mid, l.y); seg = null; }
+        // Jadval: chapda faqat tartib raqami, o'ngda matn — bu bitta qator, ustunlarga bo'lmaymiz
+        const rowNum = /^\s*\d{1,4}[.)]?\s*$/.test(seg.text) && !/^\s*\d/.test(r.text);
+        if (!rowNum && (gap > 2.5 * size || (cross && gap > 0.6 * size))) { pushSeg(cols, seg, mid, l.y); seg = null; }
       }
       if (!seg) seg = { x: r.x, x2: r.x2, text: r.text, size };
       else {
         const gap = r.x - seg.x2;
-        const needSpace = gap > 0.18 * size && !/\s$/.test(seg.text) && !/^\s/.test(r.text);
+        const needSpace = (gap > 0.18 * size || gap > 2.5 * size) && !/\s$/.test(seg.text) && !/^\s/.test(r.text);
         seg.text += (needSpace ? " " : "") + r.text;
         seg.x2 = Math.max(seg.x2, r.x2);
       }

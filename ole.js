@@ -80,8 +80,10 @@ export function rowLines(cells) {
   let c = cells.map((x) => (x == null ? "" : String(x).replace(/\s+/g, " ").trim())).filter(Boolean);
   let num = 0;
   if (c.length && isNumCell(c[0])) num = parseInt(c.shift(), 10);
-  // Sarlavha qatori ("Savol | A | B | C | D | Javob") — savol emas
-  if (c.some((x, i) => x.toUpperCase() === "A" && (c[i + 1] || "").toUpperCase() === "B")) return [rowLine(cells)];
+  // Sarlavha qatori ("№ | Savol | A | B | C | D | Javob" yoki "So'z | Tarjima") — o'tkazib yuboramiz
+  if (c.some((x, i) => x.toUpperCase() === "A" && (c[i + 1] || "").toUpperCase() === "B")) return [];
+  const HEAD = /^(№|#|n|no|savol|savollar|javob|to['‘’`ʻ]?g['‘’`ʻ]?ri javob|izoh|so['‘’`ʻ]z|so['‘’`ʻ]zlar|tarjima|tarjimasi|ma['‘’`ʻ]nosi|word|words|translation|question|answer|explanation|слово|перевод|вопрос|ответ|kelime|çeviri|soru|cevap|açıklama|turkcha|o['‘’`ʻ]zbekcha|inglizcha|ruscha)$/i;
+  if (c.length >= 2 && c.every((x) => HEAD.test(x.trim()))) return [];
   const asMcq = (q, opts, ans, exp) => [`${num || 1}. ${q}`, ...opts.map((o, i) => `${"ABCDEFGHIJ"[i]}) ${o}`), `Javob: ${ans}`,
     ...(exp ? [`Izoh: ${exp}`] : [])];
   if (c.length >= 4) {

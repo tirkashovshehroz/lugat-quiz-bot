@@ -22,7 +22,8 @@ const BTN_SET = "⚙️ Sozlamalar";
 const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yoki .txt faylni yuboring yoki matnni xabar qilib yozing.\n" +
   "Savol ostiga <code>Izoh: ...</code> yozsangiz — javobdan keyin tushuntirish chiqadi. Word ichidagi rasmlar savolga o'zi biriktiriladi.\n\n" +
   "✍️ <b>2-usul — QuizBot kabi, bittalab:</b> 📎 → <b>So'rovnoma</b> → <b>Viktorina</b> rejimini yoqing, to'g'ri javobni belgilang (izoh ham yozish mumkin) va shu yerga yuboring.\n" +
-  "🖼 Rasmli savol uchun avval rasmni yuboring, keyin viktorinani.";
+  "🖼 Rasmli savol uchun avval rasmni yuboring, keyin viktorinani.\n\n" +
+  "🗂 Fayl qanday bo'lishi kerakligini ko'rish uchun: /namuna";
 const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
 const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
   [{ text: BTN_AD }, { text: BTN_SET }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
@@ -34,7 +35,8 @@ const USER_COMMANDS = [
   { command: "newquiz", description: "Yangi test yaratish" },
   { command: "mytests", description: "Mening testlarim" },
   { command: "tests", description: "🗂 Muallif testlari" },
-  { command: "guide", description: "Yo'riqnoma (PDF)" },
+  { command: "guide", description: "📖 Yo'riqnoma va namunalar" },
+  { command: "namuna", description: "🗂 Namuna fayllar" },
   { command: "reklama", description: "📣 Botga reklama berish" },
   { command: "author", description: "Muallif bilan bog'lanish" },
   { command: "settings", description: "⚙️ Sozlamalar" },
@@ -49,9 +51,9 @@ const ADMIN_COMMANDS = [
   { command: "tests", description: "🗂 Muallif testlari" },
   { command: "reklama", description: "📣 Reklama boshqaruvi" },
   { command: "stat", description: "📊 Bot statistikasi" },
-  { command: "setguide", description: "📖 Yo'riqnomani yangilash" },
+  { command: "materials", description: "📚 Yo'riqnoma va namunalarni boshqarish" },
   { command: "bans", description: "🚫 Bloklanganlar ro'yxati" },
-  { command: "guide", description: "Yo'riqnoma (PDF)" },
+  { command: "guide", description: "📖 Yo'riqnoma va namunalar" },
   { command: "stop", description: "Testni to'xtatish" },
   { command: "cancel", description: "Bekor qilish" },
 ];
@@ -63,7 +65,7 @@ const HELP =
   "2️⃣ Bo'lim va savollar sonini tanlang\n" +
   "3️⃣ Test nomi, tavsifi, vaqti va aralashtirishni belgilang\n" +
   "4️⃣ Tayyor! O'zingiz yeching, guruhda o'tkazing yoki ulashing 👥\n\n" +
-  "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma\n/lang — til\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
+  "/newquiz — yangi test\n/mytests — mening testlarim\n/tests — muallif testlari\n/guide — yo'riqnoma va namunalar\n/namuna — namuna fayllar\n/lang — til\n/reklama — botga reklama berish\n/stop — testni to'xtatish\n/cancel — bekor qilish";
 
 // ---------------- Yordamchilar ----------------
 async function tg(env, method, body) {
@@ -559,11 +561,69 @@ export class Chat extends DurableObject {
     const a = authorOf(this.env).replace(/^@/, "").toLowerCase();
     return (from?.username || "").toLowerCase() === a || (this.env.ADMIN_ID && String(from?.id) === String(this.env.ADMIN_ID));
   }
-  async sendGuide() {
-    const fid = await this.store().getSetting("guide");
-    if (!fid) return this.send("📖 Yo'riqnoma hali yuklanmagan. Savollar bo'lsa, muallifga yozing: /author");
+  // ---------- Yo'riqnoma va namunalar ----------
+  async samples() {
+    try { return JSON.parse((await this.store().getSetting("samples")) || "[]"); } catch { return []; }
+  }
+  async guideMenu(editId) {
+    const n = (await this.samples()).length;
+    const text = "📖 <b>Yo'riqnoma va namunalar</b>\n\nKerakli bo'limni tanlang:";
+    const reply_markup = kb([[btn("📖 Bot yo'riqnomasi", "g:bot")], [btn("📘 Test fayli qanday bo'lishi kerak", "g:fmt")],
+      [btn(`🗂 Namuna fayllar (${n})`, "g:smp")]]);
+    return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
+  }
+  async sendGuide(kind = "bot") {
+    const key = kind === "fmt" ? "fguide" : "guide";
+    const fid = await this.store().getSetting(key);
+    if (!fid) return this.send("📖 Bu yo'riqnoma hali yuklanmagan. Savollar bo'lsa, muallifga yozing: /author");
+    const head = kind === "fmt" ? "📘 <b>Test fayli qanday bo'lishi kerak</b>" : "📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>";
     return this.tgx("sendDocument", { chat_id: this.chatId, document: fid,
-      caption: "📖 <b>LingoUP bot — foydalanish yo'riqnomasi</b>\n\nSavollar bo'lsa " + esc(authorOf(this.env)) + " bilan bog'laning.", parse_mode: "HTML" });
+      caption: head + "\n\nSavollar bo'lsa " + esc(authorOf(this.env)) + " bilan bog'laning.", parse_mode: "HTML" });
+  }
+  async samplesMenu(editId) {
+    const list = await this.samples();
+    if (!list.length) return this.send("🗂 Namuna fayllar hali yuklanmagan.");
+    const rows = list.map((s, i) => [btn(`📄 ${s.title}`.slice(0, 60), `smp:${i}`)]);
+    rows.push([btn("📦 Hammasini yuborish", "smp:all")], [btn("⬅️ Orqaga", "g:menu")]);
+    const text = "🗂 <b>Namuna fayllar</b>\n\nFaylni tanlang — u sizga yuboriladi. Shu fayllardagidek tuzib yuborsangiz, bot testni o'zi yaratadi.";
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  sendSample(s) {
+    return this.tgx("sendDocument", { chat_id: this.chatId, document: s.file_id, caption: `🗂 ${esc(s.title)}${s.note ? "\n" + esc(s.note) : ""}`, parse_mode: "HTML" });
+  }
+
+  // Muallif: materiallarni boshqarish
+  async materialsMenu(editId) {
+    const store = this.store();
+    const g = await store.getSetting("guide"), f = await store.getSetting("fguide");
+    const list = await this.samples();
+    const text = "📚 <b>Materiallar boshqaruvi</b>\n\n" +
+      `📖 Bot yo'riqnomasi: ${g ? "✅ yuklangan" : "❌ yo'q"}\n📘 Test fayli yo'riqnomasi: ${f ? "✅ yuklangan" : "❌ yo'q"}\n🗂 Namuna fayllar: ${list.length} ta\n\n` +
+      "🔄 — yangisini yuklash (eskisi o'chadi), 🗑 — o'chirish.";
+    const rows = [
+      [btn("🔄 Bot yo'riqnomasi", "mt:set:guide"), btn("🗑", "mt:del:guide")],
+      [btn("🔄 Test fayli yo'riqnomasi", "mt:set:fguide"), btn("🗑", "mt:del:fguide")],
+      [btn("➕ Namuna qo'shish", "mt:add")],
+      ...list.map((s, i) => [btn(`🗑 ${s.title}`.slice(0, 60), `mt:rm:${i}`)]),
+      list.length ? [btn("🗑 Barcha namunalarni o'chirish", "mt:rmall")] : [],
+    ];
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async onMaterialFile(doc, caption) {
+    const mode = await this.st.get("awaitMat");
+    const store = this.store();
+    if (mode === "guide" || mode === "fguide") {
+      await this.st.delete("awaitMat");
+      await store.setSetting(mode, doc.file_id);
+      await this.send(mode === "guide" ? "✅ Bot yo'riqnomasi yangilandi. Eskisi o'chirildi." : "✅ Test fayli yo'riqnomasi yangilandi. Eskisi o'chirildi.");
+      return this.materialsMenu();
+    }
+    const list = await this.samples();
+    const title = (caption || doc.file_name || "Namuna").replace(/\.[^.]+$/, "").replace(/_/g, " ").trim().slice(0, 50);
+    list.push({ title, file_id: doc.file_id });
+    await store.setSetting("samples", JSON.stringify(list));
+    return this.send(`✅ Namuna qo'shildi: <b>${esc(title)}</b> (jami ${list.length} ta).\nYana fayl yuboring yoki tugating.`,
+      { reply_markup: kb([[btn("✅ Tayyor", "mt:done")]]) });
   }
   sendAuthor() {
     const a = authorOf(this.env);
@@ -755,12 +815,16 @@ export class Chat extends DurableObject {
         }
         case "guide":
         case "yoriqnoma":
-          return this.sendGuide();
+          return this.guideMenu();
+        case "namuna":
+        case "samples":
+          return this.samplesMenu();
+        case "materials":
+        case "materiallar":
         case "setguide":
           if (!isPrivate) return;
           if (!this.isAuthor(m.from)) return this.send("Bu buyruq faqat bot muallifi uchun.");
-          await this.st.put("awaitGuide", true);
-          return this.send("📖 Yo'riqnoma PDF faylini yuboring. Obunachilar uni «📖 Yo'riqnoma» tugmasi orqali yuklab oladi.\nBekor qilish: /cancel");
+          return this.materialsMenu();
         case "help":
           return isPrivate ? this.sendHelp() : this.send(HELP);
         case "stop":
@@ -802,7 +866,7 @@ export class Chat extends DurableObject {
         case "cancel":
           await this.st.delete("manual");
           await this.st.delete("awaitAd");
-          await this.st.delete("awaitGuide");
+          await this.st.delete("awaitMat");
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
@@ -813,12 +877,7 @@ export class Chat extends DurableObject {
       return;
     }
     if (!isPrivate) return;
-    if (m.document && (await this.st.get("awaitGuide")) && this.isAuthor(m.from)) {
-      await this.st.delete("awaitGuide");
-      await this.store().setSetting("guide", m.document.file_id);
-      await this.send("✅ Yo'riqnoma saqlandi! Obunachilar endi uni «📖 Yo'riqnoma» tugmasi yoki /guide orqali yuklab olishadi.");
-      return this.sendGuide();
-    }
+    if (m.document && (await this.st.get("awaitMat")) && this.isAuthor(m.from)) return this.onMaterialFile(m.document, m.caption);
     if (m.document) return this.onFile(m.document);
     if (m.poll) return this.onQuizPoll(m.poll);
     if (m.photo) return this.onPhoto(m);
@@ -832,7 +891,7 @@ export class Chat extends DurableObject {
     if (text === BTN_CAT) return this.catalog(0);
     if (text === BTN_SET) return this.settingsMenu();
     if (text === BTN_AUTHOR) return this.sendAuthor();
-    if (text === BTN_GUIDE) return this.sendGuide();
+    if (text === BTN_GUIDE) return this.guideMenu();
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
     if (!text) return;
 
@@ -1344,7 +1403,7 @@ export class Chat extends DurableObject {
         const res = await store.deleteUserData(uid);
         if (this.env.TESTS_CHANNEL)
           for (const mid of res.posts) await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
-        for (const k of ["sess", "create", "edit", "retry", "reg", "awaitAd", "adDraft", "awaitGuide", "pendingStart"]) await this.st.delete(k);
+        for (const k of ["sess", "create", "edit", "retry", "reg", "awaitAd", "adDraft", "awaitMat", "pendingStart"]) await this.st.delete(k);
         return this.edit(msgId, `✅ Ma'lumotlaringiz o'chirildi.\n🎲 O'chirilgan testlar: ${res.quizzes}\n\nBotdan yana foydalanishingiz mumkin — /start`);
       }
       if (val !== "no")
@@ -1382,6 +1441,58 @@ export class Chat extends DurableObject {
       if (val === "all") return this.offerSections(b.all, b.sections, b.title, msgId);
       const idx = b.lessons.map((l, i) => (l.level === val ? i : -1)).filter((i) => i >= 0);
       return this.offerSections(b.all.filter((p) => idx.includes(p[3])), b.sections, `${b.title} — ${val}`, msgId);
+    }
+
+    if (kind === "g") {
+      await answer();
+      if (val === "bot" || val === "fmt") return this.sendGuide(val);
+      if (val === "smp") return this.samplesMenu(msgId);
+      return this.guideMenu(msgId);
+    }
+    if (kind === "smp") {
+      const list = await this.samples();
+      await answer();
+      if (val === "all") { for (const s of list) await this.sendSample(s); return; }
+      const s = list[+val];
+      return s ? this.sendSample(s) : this.samplesMenu(msgId);
+    }
+    if (kind === "mt") {
+      if (!this.isAuthor(cq.from)) return answer("Faqat muallif uchun", true);
+      const [act, arg] = val.split(":");
+      const list = await this.samples();
+      if (act === "set") {
+        await this.st.put("awaitMat", arg);
+        await answer();
+        return this.send(arg === "guide" ? "📖 Yangi bot yo'riqnomasini (PDF) yuboring. Eskisi almashtiriladi.\nBekor qilish: /cancel"
+          : "📘 Yangi «Test fayli qanday bo'lishi kerak» yo'riqnomasini (PDF) yuboring. Eskisi almashtiriladi.\nBekor qilish: /cancel");
+      }
+      if (act === "del") {
+        await store.setSetting(arg, "");
+        await answer("🗑 O'chirildi");
+        return this.materialsMenu(msgId);
+      }
+      if (act === "add") {
+        await this.st.put("awaitMat", "smp");
+        await answer();
+        return this.send("🗂 Namuna fayllarni yuboring (bir nechtasini ketma-ket yuborsa bo'ladi).\nFayl izohiga (caption) nom yozsangiz — o'sha nom bilan chiqadi, aks holda fayl nomi olinadi.\nTugatish: «✅ Tayyor» yoki /cancel");
+      }
+      if (act === "done") {
+        await this.st.delete("awaitMat");
+        await answer("✅");
+        return this.materialsMenu();
+      }
+      if (act === "rm") {
+        list.splice(+arg, 1);
+        await store.setSetting("samples", JSON.stringify(list));
+        await answer("🗑 O'chirildi");
+        return this.materialsMenu(msgId);
+      }
+      if (act === "rmall") {
+        await store.setSetting("samples", "[]");
+        await answer("🗑 O'chirildi");
+        return this.materialsMenu(msgId);
+      }
+      return answer();
     }
 
     if (kind === "cat") { await answer(); return this.catalog(parseInt(val, 10) || 0, msgId); }
