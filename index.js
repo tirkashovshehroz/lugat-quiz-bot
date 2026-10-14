@@ -461,6 +461,7 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   if (exps) text += `\n💬 ${exps === n ? "Har bir savolda izoh bor" : `${exps} ta savolda izoh bor`}`;
   if (takers != null) text += `\n👥 ${takers} kishi yechgan`;
   if (author) text += quiz.public ? "\n🌐 Hammaga ko'rinadi («Muallif testlari» va kanalda)" : "\n🔒 Faqat sizga ko'rinadi";
+  else if (owner) text += quiz.chanMsg ? "\n📢 Testlar kanalida joylangan" : "\n🔒 Kanalga joylanmagan";
   text += `\n\n🔗 https://t.me/${me}?start=${quiz.id}`;
   const rows = [
     [btn("▶️ Testni boshlash", `run:${quiz.id}`)],
@@ -469,6 +470,7 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
+  else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
 }
 
@@ -905,7 +907,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · testlarni o'chirish</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · kanalga joylash ixtiyoriy</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -1186,8 +1188,7 @@ export class Chat extends DurableObject {
     const c = await cardContent(this.env, quiz, { owner: true, takers: 0, author });
     await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin." +
       (author ? "\n🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing."
-        : this.env.TESTS_CHANNEL ? "\n📢 Test kanalimizga ham joylandi." : ""));
-    if (!author) await this.postToChannel(quiz, from);
+        : this.env.TESTS_CHANNEL ? "\n📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing." : ""));
     return this.send(c.text, { reply_markup: c.reply_markup });
   }
 
@@ -1426,8 +1427,7 @@ export class Chat extends DurableObject {
       if (act === "ok") {
         await store.setStatus(quiz.id, "ok");
         await answer("✅ Ruxsat berildi");
-        await this.tgx("sendMessage", { chat_id: quiz.owner, text: `✅ «${esc(quiz.title)}» testingiz tekshiruvdan o'tdi. Endi uni ishlatishingiz mumkin: /mytests`, parse_mode: "HTML" });
-        if (quiz.status === "pending") await this.postToChannel(quiz, { id: quiz.owner, first_name: "obunachi" });
+        await this.tgx("sendMessage", { chat_id: quiz.owner, text: `✅ «${esc(quiz.title)}» testingiz tekshiruvdan o'tdi. Endi uni ishlatishingiz va xohlasangiz kanalga joylashingiz mumkin: /mytests`, parse_mode: "HTML" });
         return this.edit(msgId, `✅ «${esc(quiz.title)}» — ruxsat berildi.`);
       }
       if (act === "del") {
@@ -1461,6 +1461,23 @@ export class Chat extends DurableObject {
         return this.edit(msgId, "🗑 <b>Ma'lumotlaringizni o'chirasizmi?</b>\n\nBotdagi barcha testlaringiz (kanaldagi postlari bilan), natijalaringiz va reytingdagi o'rningiz butunlay o'chiriladi. Buni qaytarib bo'lmaydi.",
           { reply_markup: kb([[btn("Ha, o'chirish", "deldata:ok"), btn("Yo'q", "deldata:no")]]) });
       return this.settingsMenu(msgId);
+    }
+
+    if (kind === "chan") {
+      const quiz = await store.getQuiz(val);
+      if (!quiz || quiz.owner !== uid) return answer("Faqat test egasi uchun", true);
+      if (quiz.status === "pending") return answer("⏳ Test tekshiruvda", true);
+      if (!this.env.TESTS_CHANNEL) return answer("Kanal sozlanmagan", true);
+      if (quiz.chanMsg) {
+        await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+        await store.setChanMsg(quiz.id, null);
+        await answer("🔕 Kanaldan olib tashlandi");
+      } else {
+        await this.postToChannel(quiz, cq.from);
+        const q2 = await store.getQuiz(quiz.id);
+        await answer(q2?.chanMsg ? "📢 Kanalga joylandi" : "❗ Kanalga joylab bo'lmadi, keyinroq urinib ko'ring", !q2?.chanMsg);
+      }
+      return this.showCard(await store.getQuiz(quiz.id), uid, msgId);
     }
 
     if (kind === "pub") {

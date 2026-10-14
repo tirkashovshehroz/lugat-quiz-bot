@@ -71,6 +71,8 @@ const EXACT = {
   "Ha, o'chirish": ["Да, удалить", "Yes, delete", "Evet, sil"],
   "🗑 Ha, o'chirish": ["🗑 Да, удалить", "🗑 Yes, delete", "🗑 Evet, sil"],
   "⬅️ Yo'q": ["⬅️ Нет", "⬅️ No", "⬅️ Hayır"],
+  "📢 Kanalga joylash": ["📢 Опубликовать в канале", "📢 Post to channel", "📢 Kanala gönder"],
+  "🔕 Kanaldan olib tashlash": ["🔕 Убрать из канала", "🔕 Remove from channel", "🔕 Kanaldan kaldır"],
   "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
   "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
@@ -283,6 +285,11 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/📢 Testlar kanalida joylangan/g, "📢 Опубликован в канале тестов", "📢 Posted in the tests channel", "📢 Test kanalında yayınlandı"],
+  [/🔒 Kanalga joylanmagan/g, "🔒 Не опубликован в канале", "🔒 Not posted to the channel", "🔒 Kanalda yayınlanmadı"],
+  [/📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing\./g, "📢 Чтобы опубликовать тест в нашем канале, нажмите «📢 Опубликовать в канале».", "📢 To post the quiz to our channel, press «📢 Post to channel».", "📢 Testi kanalımızda yayınlamak için «📢 Kanala gönder»e basın."],
+  [/📢 Kanalga joylandi/g, "📢 Опубликовано в канале", "📢 Posted to the channel", "📢 Kanala gönderildi"],
+  [/🔕 Kanaldan olib tashlandi/g, "🔕 Убрано из канала", "🔕 Removed from the channel", "🔕 Kanaldan kaldırıldı"],
   [/📚 <b>Sizning testlaringiz<\/b> \((\d+) ta\)/g, "📚 <b>Ваши тесты</b> ($1)", "📚 <b>Your quizzes</b> ($1)", "📚 <b>Testleriniz</b> ($1)"],
   [/ — (\d+)\/(\d+)-sahifa/g, " — стр. $1/$2", " — page $1/$2", " — sayfa $1/$2"],
   [/Testni ochish uchun nomini bosing, o'chirish uchun yonidagi 🗑 ni bosing\./g, "Нажмите на название, чтобы открыть тест, или 🗑 рядом, чтобы удалить.", "Tap a title to open the quiz, or 🗑 next to it to delete.", "Testi açmak için adına, silmek için yanındaki 🗑'e basın."],
