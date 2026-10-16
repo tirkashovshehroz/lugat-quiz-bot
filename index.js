@@ -23,7 +23,8 @@ const BTN_REVIEW = "🧠 Takrorlash";
 const BTN_DONATE = "💝 Qo'llab-quvvatlash";
 const DAY = 86400e3;
 const REVIEW_STEPS = [1, 3, 7]; // xatodan keyin 1 kun, so'ng 3 va 7 kun; 3 marta to'g'ri — o'zlashtirildi
-const REVIEW_MAX = 50; // bitta takrorlash testida eng ko'pi
+const REVIEW_MAX = 50;
+const SRC_TTL = 3600e3; // yuborilgan faylning so'zlari 1 soat saqlanadi // bitta takrorlash testida eng ko'pi
 const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yoki .txt faylni yuboring yoki matnni xabar qilib yozing.\n" +
   "Savol ostiga <code>Izoh: ...</code> yozsangiz — javobdan keyin tushuntirish chiqadi. Word ichidagi rasmlar savolga o'zi biriktiriladi.\n\n" +
   "✍️ <b>2-usul — QuizBot kabi, bittalab:</b> 📎 → <b>So'rovnoma</b> → <b>Viktorina</b> rejimini yoqing, to'g'ri javobni belgilang (izoh ham yozish mumkin) va shu yerga yuboring.\n" +
@@ -1289,6 +1290,9 @@ export class Chat extends DurableObject {
   async onFile(doc) {
     if (doc.file_size > MAX_FILE) return this.send("❗ Fayl 20 MB dan katta. Darslarni alohida fayl qilib yuboring.");
     const name = doc.file_name || "lugat.txt";
+    // Yangi fayl kelganda oldingi saqlangan fayl darhol o'chiriladi
+    await this.st.delete("src");
+    await this.st.delete("book");
     try {
       const f = await this.tgx("getFile", { file_id: doc.file_id });
       const r = await fetch(`https://api.telegram.org/file/bot${this.env.BOT_TOKEN}/${f.result.file_path}`);
@@ -1312,11 +1316,31 @@ export class Chat extends DurableObject {
           delete q.imgIdx;
         }
       }
-      return this.beginCreate(parsed, name.replace(/\.[^.]+$/, "").replace(/_/g, " "));
+      const fallback = name.replace(/\.[^.]+$/, "").replace(/_/g, " ");
+      // O'qilgan so'zlar 1 soat saqlanadi — shu fayldan yana test tuzish uchun
+      const exp = Date.now() + SRC_TTL;
+      await this.st.put("src", { exp, name: fallback, parsed: { pairs: parsed.pairs, title: parsed.title, sections: parsed.sections, lessons: parsed.lessons,
+        mcq: parsed.mcq ? { title: parsed.mcq.title, questions: parsed.mcq.questions, missing: parsed.mcq.missing } : null } });
+      const al = await this.st.getAlarm();
+      if (!al || al > exp) await this.st.setAlarm(exp + 1000);
+      return this.beginCreate(parsed, fallback);
     } catch (e) {
       console.log("Fayl xatosi", e);
       return this.send("❗ Faylni o'qib bo'lmadi. Formatni tekshiring: /help");
     }
+  }
+
+  // Saqlangan fayl (1 soat): muddati o'tgan bo'lsa o'chiriladi
+  async getSrc() {
+    const src = await this.st.get("src");
+    if (src && src.exp <= Date.now()) { await this.st.delete("src"); return null; }
+    return src || null;
+  }
+  async againButton() {
+    const src = await this.getSrc();
+    if (!src) return;
+    return this.send(`📂 <b>${esc(src.name)}</b> fayli ${fmtDate(src.exp).slice(6)} gacha saqlanadi — shu fayldan yana test tuzishingiz mumkin.`,
+      { reply_markup: kb([[btn("📂 Shu fayldan yana test tuzish", "src:again")], [btn("🗑 Faylni hozir o'chirish", "src:del")]]) });
   }
 
   // ---------- Test yaratish bosqichlari ----------
@@ -1520,7 +1544,8 @@ export class Chat extends DurableObject {
     await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin." +
       (author ? "\n🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing."
         : this.env.TESTS_CHANNEL ? "\n📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing — muallif tasdiqlagach kanalda chiqadi." : ""));
-    return this.send(c.text, { reply_markup: c.reply_markup });
+    await this.send(c.text, { reply_markup: c.reply_markup });
+    return this.againButton();
   }
 
   // Bir nechta qismli testlarni bir yo'la yaratish
@@ -1563,7 +1588,8 @@ export class Chat extends DurableObject {
         : this.env.TESTS_CHANNEL ? "\n\n📢 Kanalga joylash uchun testni ochib «📢 Kanalga joylash» ni bosing — muallif tasdiqlagach kanalda chiqadi." : "") +
       "\n\nTestni ochish uchun bosing 👇";
     const rows = made.filter((m) => !m.bad).map((m) => [btn(`🎲 ${m.title} · ${m.n}`.slice(0, 60), `open:${m.id}`)]);
-    return this.edit(msgId, text, { reply_markup: kb(rows) });
+    await this.edit(msgId, text, { reply_markup: kb(rows) });
+    return this.againButton();
   }
 
   async catalog(page = 0, editId) {
@@ -2331,6 +2357,17 @@ export class Chat extends DurableObject {
       }
       return;
     }
+    if (kind === "src") {
+      await answer();
+      if (val === "del") {
+        await this.st.delete("src");
+        return this.edit(msgId, "🗑 Fayl o'chirildi. Yangi test uchun faylni qayta yuboring.");
+      }
+      const src = await this.getSrc();
+      if (!src) return this.edit(msgId, "⌛ Fayl saqlanish muddati (1 soat) tugadi va o'chirildi. Test tuzish uchun faylni qayta yuboring.");
+      await this.st.delete("edit");
+      return this.beginCreate(src.parsed, src.name);
+    }
     if (kind === "rvm") { await answer(); return this.reviewMenu(uid, msgId); }
     if (kind === "rv" || kind === "rva") { await answer(); return this.startReview(uid, kind === "rva", msgId); }
     if (kind === "retry") {
@@ -2429,8 +2466,14 @@ export class Chat extends DurableObject {
   async alarm() {
     this.chatId = await this.st.get("chatId");
     await this.loadLang();
+    // Saqlangan fayl muddati tugagan bo'lsa — o'chiramiz
+    const src = await this.st.get("src");
+    if (src && src.exp <= Date.now()) await this.st.delete("src");
     const sess = await this.st.get("sess");
-    if (!sess || sess.phase !== "run") return;
+    if (!sess || sess.phase !== "run") {
+      if (src && src.exp > Date.now()) await this.st.setAlarm(src.exp + 1000);
+      return;
+    }
     if (sess.cur) {
       if (!sess.cur.answered.length) {
         sess.miss++;
