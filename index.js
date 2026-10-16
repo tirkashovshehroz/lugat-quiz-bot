@@ -44,6 +44,7 @@ const USER_COMMANDS = [
   { command: "hisobot", description: "📈 Hisobot — guruh testlari va o'quvchilar" },
   { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
   { command: "namuna", description: "📄 Namunalar — test fayli qanday bo'ladi" },
+  { command: "yozish", description: "💬 Muallifga yozish — bot orqali xabar" },
   { command: "author", description: "👨‍🏫 Muallif — savol va takliflar" },
   { command: "donat", description: "💝 Qo'llab-quvvatlash — bot rivojiga hissa" },
   { command: "reklama", description: "📣 Reklama — botga reklama berish" },
@@ -818,8 +819,37 @@ export class Chat extends DurableObject {
   }
   sendAuthor() {
     const a = authorOf(this.env);
-    return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇`,
-      { reply_markup: kb([[{ text: "✉️ Muallifga yozish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
+    return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇\n\n💬 <b>Bot orqali yozish</b> — xabaringiz muallifga shu bot orqali boradi, javob ham shu yerga keladi.`,
+      { reply_markup: kb([[btn("💬 Bot orqali yozish", "sup:new")], [{ text: "✉️ Telegramda yozish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
+  }
+  // ---------- Muallif bilan yozishma ----------
+  async askSupport(editId) {
+    await this.st.put("awaitSupport", 1);
+    const text = "💬 <b>Muallifga xabar</b>\n\nXabaringizni yozing — matn, rasm, ovozli xabar yoki fayl bo'lishi mumkin. U muallifga yuboriladi, javob shu chatga keladi.\n\nBekor qilish: /cancel";
+    return editId ? this.edit(editId, text) : this.send(text);
+  }
+  async forwardToAuthor(m) {
+    const admin = await this.adminChat();
+    if (!admin) { await this.st.delete("awaitSupport"); return this.send("❗ Hozircha xabar yuborib bo'lmadi. Keyinroq urinib ko'ring yoki /author"); }
+    const last = (await this.st.get("supLast")) || 0;
+    if (Date.now() - last < 15000) return this.send("⏳ Biroz kuting va qayta yuboring.");
+    await this.st.delete("awaitSupport");
+    await this.st.put("supLast", Date.now());
+    const u = m.from;
+    const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || "Foydalanuvchi";
+    await tg(this.env, "sendMessage", { chat_id: admin, parse_mode: "HTML",
+      text: `📩 <b>Yangi xabar</b>\n👤 <a href="tg://user?id=${u.id}">${esc(name)}</a>${u.username ? ` (@${esc(u.username)})` : ""}\n🆔 <code>${u.id}</code>`,
+      reply_markup: kb([[btn("↩️ Javob berish", `sup:r:${u.id}`)]]) });
+    const r = await tg(this.env, "copyMessage", { chat_id: admin, from_chat_id: this.chatId, message_id: m.message_id });
+    if (!r.ok) return this.send("❗ Xabarni yuborib bo'lmadi. Boshqacha shaklda yuborib ko'ring.");
+    return this.send("✅ Xabaringiz muallifga yuborildi. Javob shu chatga keladi.", { reply_markup: kb([[btn("💬 Yana yozish", "sup:new")]]) });
+  }
+  async sendSupportReply(m, uid) {
+    await this.st.delete("awaitReply");
+    await tg(this.env, "sendMessage", { chat_id: uid, parse_mode: "HTML", text: "📬 <b>Muallifdan javob:</b>" });
+    const r = await tg(this.env, "copyMessage", { chat_id: uid, from_chat_id: this.chatId, message_id: m.message_id,
+      reply_markup: kb([[btn("💬 Javob yozish", "sup:new")]]) });
+    return this.send(r.ok ? "✅ Javob yuborildi." : `❗ Yuborib bo'lmadi: <code>${esc(r.description || "")}</code>\n(Foydalanuvchi botni bloklagan bo'lishi mumkin.)`);
   }
 
   // Foydalanuvchini bloklash/blokdan chiqarish (muallif tomonidan chaqiriladi)
@@ -966,6 +996,12 @@ export class Chat extends DurableObject {
       }
     }
     // Muallif reklama postini yuboryapti
+    // Muallif bilan yozishma: foydalanuvchi xabari muallifga, muallif javobi foydalanuvchiga
+    if (isPrivate && !text.startsWith("/") && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE].includes(text)) {
+      const replyTo = this.isAuthor(m.from) ? await this.st.get("awaitReply") : null;
+      if (replyTo) return this.sendSupportReply(m, replyTo);
+      if (await this.st.get("awaitSupport")) return this.forwardToAuthor(m);
+    }
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitDonate")) && this.isAuthor(m.from)) {
       await this.st.delete("awaitDonate");
       await this.store().setSetting("donate", text.trim().slice(0, 1500));
@@ -987,7 +1023,7 @@ export class Chat extends DurableObject {
       const [cmd, target] = head.slice(1).split("@");
       if (target && target.toLowerCase() !== (await botName(this.env)).toLowerCase()) return;
       const arg = rest.join(" ");
-      if (isPrivate) await this.st.delete("awaitMat");
+      if (isPrivate) { await this.st.delete("awaitMat"); await this.st.delete("awaitSupport"); await this.st.delete("awaitReply"); }
       switch (cmd.toLowerCase()) {
         case "start":
           if (isPrivate && !(await this.st.get("lang"))) {
@@ -1003,6 +1039,9 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "yozish":
+        case "support":
+          return isPrivate ? this.askSupport() : null;
         case "hisobot":
         case "report": {
           if (isPrivate) return this.reportHome(m.from.id);
@@ -1124,6 +1163,8 @@ export class Chat extends DurableObject {
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
         case "cancel":
+          await this.st.delete("awaitSupport");
+          await this.st.delete("awaitReply");
           await this.st.delete("manual");
           await this.st.delete("awaitAd");
           await this.st.delete("awaitDonate");
@@ -2278,6 +2319,17 @@ export class Chat extends DurableObject {
       await answer();
       if (val === "del") { await store.setSetting("donate", ""); return this.edit(msgId, "🗑 Donat ma'lumoti o'chirildi. Qayta sozlash: /donatsozla"); }
       return this.donateSetup();
+    }
+    if (kind === "sup") {
+      await answer();
+      if (val === "new") return this.askSupport();
+      if (val.startsWith("r:")) {
+        if (!this.isAuthor(cq.from)) return;
+        const target = +val.slice(2);
+        await this.st.put("awaitReply", target);
+        return this.send(`✍️ <code>${target}</code> ga javobingizni yozing (matn, rasm, fayl, ovozli xabar).\nBekor qilish: /cancel`);
+      }
+      return;
     }
     if (kind === "rvm") { await answer(); return this.reviewMenu(uid, msgId); }
     if (kind === "rv" || kind === "rva") { await answer(); return this.startReview(uid, kind === "rva", msgId); }

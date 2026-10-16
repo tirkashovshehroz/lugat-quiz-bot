@@ -87,6 +87,10 @@ const EXACT = {
   "👤 O'quvchilar bo'yicha hisobot": ["👤 Отчёт по ученикам", "👤 Report by student", "👤 Öğrenci raporu"],
   "⬅️ Guruhlar": ["⬅️ Группы", "⬅️ Groups", "⬅️ Gruplar"],
   "💝 Qo'llab-quvvatlash": ["💝 Поддержать", "💝 Support", "💝 Destek ol"],
+  "💬 Bot orqali yozish": ["💬 Написать через бота", "💬 Write via the bot", "💬 Bot üzerinden yaz"],
+  "✉️ Telegramda yozish": ["✉️ Написать в Telegram", "✉️ Write on Telegram", "✉️ Telegram'da yaz"],
+  "💬 Yana yozish": ["💬 Написать ещё", "💬 Write again", "💬 Tekrar yaz"],
+  "💬 Javob yozish": ["💬 Ответить", "💬 Reply", "💬 Yanıtla"],
   "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
   "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
@@ -299,6 +303,12 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/💬 <b>Bot orqali yozish<\/b> — xabaringiz muallifga shu bot orqali boradi, javob ham shu yerga keladi\./g, "💬 <b>Написать через бота</b> — сообщение уйдёт автору через этого бота, ответ придёт сюда же.", "💬 <b>Write via the bot</b> — your message goes to the author through this bot, and the reply comes back here.", "💬 <b>Bot üzerinden yaz</b> — mesajınız bu bot aracılığıyla yazara gider, yanıt da buraya gelir."],
+  [/💬 <b>Muallifga xabar<\/b>/g, "💬 <b>Сообщение автору</b>", "💬 <b>Message to the author</b>", "💬 <b>Yazara mesaj</b>"],
+  [/Xabaringizni yozing — matn, rasm, ovozli xabar yoki fayl bo'lishi mumkin\. U muallifga yuboriladi, javob shu chatga keladi\./g, "Напишите сообщение — текст, фото, голосовое или файл. Оно уйдёт автору, ответ придёт в этот чат.", "Write your message — text, photo, voice or file. It will be sent to the author; the reply will come to this chat.", "Mesajınızı yazın — metin, fotoğraf, sesli mesaj veya dosya olabilir. Yazara gönderilir, yanıt bu sohbete gelir."],
+  [/✅ Xabaringiz muallifga yuborildi\. Javob shu chatga keladi\./g, "✅ Сообщение отправлено автору. Ответ придёт в этот чат.", "✅ Your message was sent to the author. The reply will come here.", "✅ Mesajınız yazara gönderildi. Yanıt buraya gelecek."],
+  [/📬 <b>Muallifdan javob:<\/b>/g, "📬 <b>Ответ автора:</b>", "📬 <b>Reply from the author:</b>", "📬 <b>Yazardan yanıt:</b>"],
+  [/⏳ Biroz kuting va qayta yuboring\./g, "⏳ Подождите немного и отправьте снова.", "⏳ Please wait a moment and send again.", "⏳ Biraz bekleyip tekrar gönderin."],
   [/📖 (\d+) ta so'z, (\d+) ta mavzu\./g, "📖 Слов: $1, тем: $2.", "📖 $1 words, $2 topics.", "📖 $1 kelime, $2 konu."],
   [/📖 (\d+) ta so'z, (\d+) ta bo'lim\./g, "📖 Слов: $1, разделов: $2.", "📖 $1 words, $2 sections.", "📖 $1 kelime, $2 bölüm."],
   [/Qaysi mavzudan test tuzamiz\?/g, "По какой теме создать тест?", "Which topic should the quiz cover?", "Hangi konudan test oluşturalım?"],
@@ -478,6 +488,7 @@ export const CMD_TR = {
   "📈 Hisobot — guruh testlari va o'quvchilar": ["📈 Отчёт — тесты групп и ученики", "📈 Report — group quizzes and students", "📈 Rapor — grup testleri ve öğrenciler"],
   "💝 Qo'llab-quvvatlash — bot rivojiga hissa": ["💝 Поддержать — вклад в развитие бота", "💝 Support — help the bot grow", "💝 Destek ol — botun gelişimine katkı"],
   "💳 Donat sozlash — karta raqamini kiritish": ["💳 Настройка доната — номер карты", "💳 Donation setup — card number", "💳 Bağış ayarı — kart numarası"],
+  "💬 Muallifga yozish — bot orqali xabar": ["💬 Написать автору — через бота", "💬 Write to the author — via the bot", "💬 Yazara yaz — bot üzerinden"],
   "📊 Statistika — foydalanuvchilar va testlar": ["📊 Статистика — пользователи и тесты", "📊 Stats — users and quizzes", "📊 İstatistik — kullanıcılar ve testler"],
   "📚 Materiallar — yo'riqnoma va namunalar": ["📚 Материалы — инструкции и образцы", "📚 Materials — guides and samples", "📚 Materyaller — kılavuz ve örnekler"],
   "🚫 Bloklanganlar — ro'yxat va blokdan chiqarish": ["🚫 Заблокированные — список и разблокировка", "🚫 Banned — list and unban", "🚫 Engellenenler — liste ve kaldırma"],
