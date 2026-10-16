@@ -1168,6 +1168,13 @@ export class Chat extends DurableObject {
     if (ed) return this.onEditText(ed, text, m.from.id, m.from);
 
     const create = await this.st.get("create");
+    if (create?.step === "sec" && /^\d{1,4}$/.test(text.trim()) && create.secNames?.length > 14) {
+      const n = text.trim();
+      const k = create.secNames.findIndex((nm) => nm.startsWith(n + ". "));
+      if (k < 0) return this.send(`❗ ${n}-mavzu topilmadi. 1–${create.secNames.length} oralig'ida raqam yozing.`);
+      const nm = create.secNames[k];
+      return this.askCount(uniqWords(create.all.filter((p) => p[2] === nm)), `${create.title} — ${nm}`);
+    }
     if (create?.step === "splitcustom") {
       const k = parseInt(text.trim(), 10);
       if (!/^\d+$/.test(text.trim()) || k < 2) return this.send("Raqam yozing, masalan: 40");
@@ -1337,13 +1344,33 @@ export class Chat extends DurableObject {
     const named = pairs.map((p) => [p[0], p[1], sections?.[p[2]] ?? null]);
     const names = [...new Set(named.map((p) => p[2]).filter(Boolean))];
     if (names.length > 1) {
-      await this.st.put("create", { all: named, title, secNames: names, step: "sec" });
-      const rows = names.map((nm, k) => [btn(`${nm} (${uniqWords(named.filter((p) => p[2] === nm)).length})`, `sec:${k}`)]);
-      rows.push([btn(`📚 Hammasi (${uniqWords(named).length})`, "sec:all")]);
-      const text = `📄 <b>${esc(title)}</b>\n📖 ${uniqWords(named).length} ta so'z topildi.\n\nQaysi bo'limdan test tuzamiz?`;
-      return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+      const create = { all: named, title, secNames: names, step: "sec" };
+      await this.st.put("create", create);
+      return this.sectionPage(create, 0, editId);
     }
     return this.askCount(uniqWords(named), title, editId);
+  }
+
+  // Bo'limlar (mavzular) ro'yxati — ko'p bo'lsa sahifalab ko'rsatiladi
+  async sectionPage(create, page, editId) {
+    const PER = 12;
+    const names = create.secNames;
+    const counts = {};
+    for (const p of create.all) counts[p[2]] = (counts[p[2]] || 0) + 1;
+    const pages = Math.ceil(names.length / PER);
+    page = Math.min(Math.max(0, page), pages - 1);
+    const rows = names.slice(page * PER, page * PER + PER).map((nm, j) => [btn(`${nm} (${counts[nm] || 0})`.slice(0, 64), `sec:${page * PER + j}`)]);
+    const nav = [];
+    if (page > 0) nav.push(btn("⬅️ Oldingi", `secp:${page - 1}`));
+    if (pages > 1) nav.push(btn(`${page + 1}/${pages}`, `secp:${page}`));
+    if (page < pages - 1) nav.push(btn("Keyingi ➡️", `secp:${page + 1}`));
+    if (nav.length) rows.push(nav);
+    if (pages > 2) rows.push([btn("⏮ 1", "secp:0"), btn(`${Math.ceil(pages / 2)}`, `secp:${Math.ceil(pages / 2) - 1}`), btn(`${pages} ⏭`, `secp:${pages - 1}`)]);
+    const total = uniqWords(create.all).length;
+    rows.push([btn(`📚 Hammasi (${total})`, "sec:all")]);
+    const text = `📄 <b>${esc(create.title)}</b>\n📖 ${total} ta so'z, ${names.length} ta ${names.length > 14 ? "mavzu" : "bo'lim"}.\n\n` +
+      `Qaysi ${names.length > 14 ? "mavzudan" : "bo'limdan"} test tuzamiz?` + (pages > 1 ? `\n<i>${page + 1}/${pages}-sahifa · raqamini yozib ham tanlashingiz mumkin (masalan: 25)</i>` : "");
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
   }
 
   async askCount(pairs, title, editId, extra = {}) {
@@ -2006,9 +2033,14 @@ export class Chat extends DurableObject {
     }
 
     // Test yaratish
-    if (["sec", "cnt", "dir", "ttl", "dsc", "tm", "shf", "spl", "spo"].includes(kind)) {
+    if (["sec", "secp", "cnt", "dir", "ttl", "dsc", "tm", "shf", "spl", "spo"].includes(kind)) {
       const create = await this.st.get("create");
       if (!create) return answer("Faylni qayta yuboring", true);
+      if (kind === "secp") {
+        if (!create.all) return answer("Faylni qayta yuboring", true);
+        await answer();
+        return this.sectionPage(create, +val || 0, msgId);
+      }
       if (kind === "sec") {
         if (!create.all) return answer("Faylni qayta yuboring", true);
         const nm = val === "all" ? null : create.secNames?.[+val];

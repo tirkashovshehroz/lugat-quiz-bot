@@ -22,11 +22,11 @@ export function splitLine(line) {
   return null;
 }
 
-function dedupe(pairs) {
+function dedupe(pairs, bySection = false) {
   const seen = new Set();
   const out = [];
   for (const p of pairs) {
-    const k = (p[3] ?? "") + "|" + p[0].toLowerCase(); // har bir dars ichida takrorlanmasin
+    const k = (p[3] ?? "") + "|" + (bySection ? p[2] + "|" : "") + p[0].toLowerCase(); // har bir dars (mavzu) ichida takrorlanmasin
     if (!seen.has(k)) {
       seen.add(k);
       out.push(p);
@@ -42,6 +42,7 @@ export function parseText(text) {
 // ---------- Tuzilmali matn: sarlavha (A1 1-DARS), bo'limlar (OTLAR / FE'LLAR), raqamli ro'yxat ----------
 const TITLE = /^([ABC][12])\s*[-–.]?\s*(\d+(?:\s*[-–]\s*\d+)?)\s*[-–.]?\s*DARS\b/i;
 const PURE_NUM = /^\d{1,4}$/;
+const TOPIC = /^(\d{1,4})[.)]\s+(\S.{0,90})$/;
 const NUMBERED = /^\s*\d+\s*[.)]?\s+\S/;
 
 function isHeader(line) {
@@ -108,7 +109,7 @@ export function parseLines(rawLines) {
   let title = null;
   const sections = [];
   const lessons = []; // [{ level: "A1", name: "A1 1-dars" }]
-  let sec = -1, les = -1;
+  let sec = -1, les = -1, topics = 0;
   const pairs = [];
   let last = null;
   for (let i = 0; i < lines.length; i++) {
@@ -124,6 +125,21 @@ export function parseLines(rawLines) {
       last = null;
       raw = raw.slice(tm0[0].length).trim();
       if (!raw) continue;
+    }
+    // Mavzu sarlavhasi: "12. Renkler" (+ ixtiyoriy tarjima qatori "Ranglar"), ostida jadval (tab bilan ajratilgan qatorlar)
+    const tp = !raw.includes("\t") && raw.match(TOPIC);
+    if (tp) {
+      const sub = lines[i + 1] || "";
+      const subOk = sub && !sub.includes("\t") && !TOPIC.test(sub) && sub.length <= 80;
+      const firstRow = subOk ? lines[i + 2] : sub;
+      if (firstRow && firstRow.includes("\t")) {
+        sections.push(`${tp[1]}. ${subOk ? sub : tp[2]}`.slice(0, 70));
+        topics++;
+        sec = sections.length - 1;
+        last = null;
+        if (subOk) i++;
+        continue;
+      }
     }
     const line = numbered ? raw.replace(/^\d+\s*[.)]?\s+/, "") : raw;
     const isNum = NUMBERED.test(raw) || raw.includes("\t"); // jadval qatori ham alohida yozuv
@@ -152,6 +168,10 @@ export function parseLines(rawLines) {
       last = { e, wait: !isNum };
     } else if (last) last.e[1] = tidy(last.e[1] + " " + line);
     else last = null;
+  }
+  if (topics >= 2) {
+    // Mavzuli lug'at: har bir mavzu o'z so'zlarini to'liq saqlaydi; birinchi mavzugacha bo'lgan kirish matni tashlanadi
+    return { pairs: dedupe(pairs.filter((p) => p[2] >= 0), true), title, sections, lessons, topics: true };
   }
   return { pairs: dedupe(pairs), title, sections, lessons };
 }

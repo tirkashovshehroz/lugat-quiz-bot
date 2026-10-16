@@ -299,6 +299,11 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/📖 (\d+) ta so'z, (\d+) ta mavzu\./g, "📖 Слов: $1, тем: $2.", "📖 $1 words, $2 topics.", "📖 $1 kelime, $2 konu."],
+  [/📖 (\d+) ta so'z, (\d+) ta bo'lim\./g, "📖 Слов: $1, разделов: $2.", "📖 $1 words, $2 sections.", "📖 $1 kelime, $2 bölüm."],
+  [/Qaysi mavzudan test tuzamiz\?/g, "По какой теме создать тест?", "Which topic should the quiz cover?", "Hangi konudan test oluşturalım?"],
+  [/(\d+)\/(\d+)-sahifa · raqamini yozib ham tanlashingiz mumkin \(masalan: 25\)/g, "стр. $1/$2 · можно также написать номер темы (например: 25)", "page $1/$2 · you can also type a topic number (e.g. 25)", "sayfa $1/$2 · konu numarasını da yazabilirsiniz (örn. 25)"],
+  [/❗ (\d+)-mavzu topilmadi\. 1–(\d+) oralig'ida raqam yozing\./g, "❗ Тема $1 не найдена. Напишите число от 1 до $2.", "❗ Topic $1 not found. Type a number from 1 to $2.", "❗ $1. konu bulunamadı. 1–$2 arasında bir sayı yazın."],
   [/💝 <b>LingoUP botini qo'llab-quvvatlash<\/b>/g, "💝 <b>Поддержать бота LingoUP</b>", "💝 <b>Support the LingoUP bot</b>", "💝 <b>LingoUP botunu destekleyin</b>"],
   [/Bot bepul ishlaydi\. Agar u sizga foydali bo'lsa, rivojiga hissa qo'shishingiz mumkin — har qanday miqdor uchun katta rahmat! 🙏/g, "Бот работает бесплатно. Если он вам полезен, вы можете поддержать его развитие — спасибо за любую сумму! 🙏", "The bot is free. If it helps you, you can support its development — thank you for any amount! 🙏", "Bot ücretsizdir. Size faydalıysa gelişimine katkıda bulunabilirsiniz — her miktar için teşekkürler! 🙏"],
   [/<i>Karta raqamini bosing — u nusxalanadi\.<\/i>/g, "<i>Нажмите на номер карты, чтобы скопировать.</i>", "<i>Tap the card number to copy it.</i>", "<i>Kopyalamak için kart numarasına dokunun.</i>"],
