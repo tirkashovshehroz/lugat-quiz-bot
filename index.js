@@ -317,6 +317,9 @@ export class Store extends DurableObject {
     return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=?", owner).toArray()[0]?.n || 0;
   }
   // Foydalanuvchining barcha testlarini o'chirish (natijalari bilan); kanal postlari qaytariladi
+  ownerQuizzes(owner) {
+    return this.sql.exec("SELECT id,title,count,public,chanMsg,chanReq,status FROM quizzes WHERE owner=? ORDER BY created ASC", owner).toArray();
+  }
   deleteAllQuizzes(owner) {
     const own = this.sql.exec("SELECT id, chanMsg FROM quizzes WHERE owner=?", owner).toArray();
     for (const q of own) this.sql.exec("DELETE FROM results WHERE qid=?", q.id);
@@ -1764,6 +1767,7 @@ export class Chat extends DurableObject {
       reply_markup: kb([[{ text: "▶️ Testni boshlash", url: `https://t.me/${me}?start=${quiz.id}` }],
         [{ text: "👥 Guruhda boshlash", url: `https://t.me/${me}?startgroup=${quiz.id}` }]]) });
     if (r.ok) await this.store().setChanMsg(quiz.id, r.result.message_id);
+    return r;
   }
 
   async myTests(owner, page = 0, editId) {
@@ -1792,6 +1796,7 @@ export class Chat extends DurableObject {
     if (page > 0) nav.push(btn("⬅️ Oldingi", `mypg:${page - 1}`));
     if (page < pages - 1) nav.push(btn("Keyingi ➡️", `mypg:${page + 1}`));
     if (nav.length) kbRows.push(nav);
+    kbRows.push([btn(author ? "📢 Hammasini kanalga chiqarish" : "📢 Hammasini kanalga so'rash", "mbulk:pub"), btn(author ? "🔒 Hammasini yashirish" : "🔕 Hammasini kanaldan olish", "mbulk:hide")]);
     kbRows.push([btn(`🗑 Hammasini o'chirish (${total})`, "mdall")]);
     const text = `📚 <b>Sizning testlaringiz</b> (${total} ta)` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
       "\n\nTestni ochish uchun nomini bosing. Ostidagi tugmalar: 📢 kanalga chiqarish / yashirish, 🗑 o'chirish." +
@@ -2350,6 +2355,77 @@ export class Chat extends DurableObject {
       await store.deleteQuiz(id, uid);
       await answer("🗑 O'chirildi");
       return this.myTests(uid, +pg || 0, msgId);
+    }
+    // Hammasini kanalga chiqarish / kanaldan olish (avval tasdiq so'raladi)
+    if (kind === "mbulk" || kind === "mbulkok") {
+      await answer();
+      const author = this.isAuthor(cq.from);
+      const all = (await store.ownerQuizzes(uid)).filter((q) => q.status !== "pending");
+      const pub = val === "pub";
+      const todo = all.filter((q) => author ? (pub ? !q.public : q.public || q.chanMsg) : (pub ? !q.chanMsg && !q.chanReq : q.chanMsg || q.chanReq));
+      if (!todo.length) return this.edit(msgId, pub ? "ℹ️ Hamma testlaringiz allaqachon kanalda" + (author ? "." : " yoki so'rov yuborilgan.") : "ℹ️ Kanalda testingiz yo'q.",
+        { reply_markup: kb([[btn("⬅️ Testlarim", "mypg:0")]]) });
+      if (kind === "mbulk") {
+        const what = pub ? (author ? `${todo.length} ta testni kanalga chiqaraymi?` : `${todo.length} ta test uchun muallifga kanalga chiqarish so'rovi yuborilsinmi?`)
+          : `${todo.length} ta testni kanaldan olaymi?` + (author ? " Ular «Muallif testlari»dan ham yashiriladi." : "");
+        return this.edit(msgId, `${pub ? "📢" : "🔒"} ${what}`, { reply_markup: kb([[btn("✅ Ha", `mbulkok:${val}`), btn("⬅️ Yo'q", "mypg:0")]]) });
+      }
+      const ch = this.env.TESTS_CHANNEL;
+      let done = 0, stopped = false;
+      if (author && pub) {
+        for (const q of todo) {
+          const quiz = await store.getQuiz(q.id);
+          const r = await this.postToChannel(quiz, cq.from);
+          if (ch && !r?.ok) { stopped = true; break; }
+          await store.setPublic(q.id, true);
+          done++;
+        }
+      } else if (!author && pub) {
+        const name = [cq.from.first_name, cq.from.last_name].filter(Boolean).join(" ") || "obunachi";
+        for (const q of todo) await store.setChanReq(q.id, name);
+        done = todo.length;
+        const admin = await this.adminChat();
+        if (admin) await this.tgx("sendMessage", { chat_id: admin, parse_mode: "HTML",
+          text: `📢 <b>Kanalga chiqarish so'rovi — ${done} ta test</b>\n👤 ${esc(name)}${cq.from.username ? ` (@${esc(cq.from.username)})` : ""}\n\n` +
+            todo.slice(0, 30).map((q, i) => `${i + 1}. ${esc(q.title)} — ${q.count} savol`).join("\n") + (todo.length > 30 ? `\n… yana ${todo.length - 30} ta` : ""),
+          reply_markup: kb([[btn("✅ Hammasini tasdiqlash", `chqa:ok:${uid}`), btn("❌ Hammasini rad etish", `chqa:no:${uid}`)],
+            ...todo.slice(0, 5).map((q) => [btn(`👁 ${q.title}`.slice(0, 60), `open:${q.id}`)])]) });
+      } else {
+        for (const q of todo) {
+          if (q.chanMsg && ch) await this.tgx("deleteMessage", { chat_id: ch, message_id: q.chanMsg });
+          await store.setChanMsg(q.id, null);
+          if (author) await store.setPublic(q.id, false);
+          else if (q.chanReq) await store.setChanReq(q.id, null);
+          done++;
+        }
+      }
+      const msg = pub ? (author ? `📢 ${done} ta test kanalga chiqarildi.` : `📨 ${done} ta test uchun so'rov muallifga yuborildi. Tasdiqlangach kanalda chiqadi.`)
+        : `🔒 ${done} ta test kanaldan olindi.`;
+      await this.send(msg + (stopped ? `\n⏳ Telegram kanalga birdaniga ko'p post yuborishni cheklaydi — qolgan ${todo.length - done} tasi uchun 1 daqiqadan keyin yana bosing.` : ""));
+      return this.myTests(uid, 0);
+    }
+    // Muallif: foydalanuvchining barcha so'rovlarini birdaniga tasdiqlash / rad etish
+    if (kind === "chqa") {
+      if (String(uid) !== String(await store.getSetting("authorId"))) return answer();
+      await answer();
+      const [act, owner] = val.split(":");
+      const list = (await store.ownerQuizzes(+owner)).filter((q) => q.chanReq && q.status !== "pending");
+      if (!list.length) return this.edit(msgId, "ℹ️ Bu foydalanuvchining kutilayotgan so'rovi qolmagan.");
+      let done = 0, stopped = false;
+      for (const q of list) {
+        const quiz = await store.getQuiz(q.id);
+        if (act === "ok" && !quiz.chanMsg) {
+          const r = await this.postToChannel(quiz, { id: quiz.owner, first_name: q.chanReq });
+          if (this.env.TESTS_CHANNEL && !r?.ok) { stopped = true; break; }
+        }
+        await store.setChanReq(q.id, null);
+        done++;
+      }
+      await this.tgx("sendMessage", { chat_id: +owner, parse_mode: "HTML", text: act === "ok"
+        ? `✅ ${done} ta testingiz tasdiqlandi va testlar kanaliga chiqarildi!` : `❌ ${done} ta testingizni kanalga chiqarish so'rovi rad etildi. Testlar botda o'zingizda qoladi.` });
+      return this.edit(msgId, (act === "ok" ? `✅ ${done} ta test kanalga chiqarildi.` : `❌ ${done} ta so'rov rad etildi.`) +
+        (stopped ? `\n⏳ Telegram cheklovi — qolgan ${list.length - done} tasi uchun 1 daqiqadan keyin yana bosing.` : ""),
+        stopped ? { reply_markup: kb([[btn("✅ Qolganini tasdiqlash", `chqa:ok:${owner}`)]]) } : {});
     }
     if (kind === "mdall") {
       await answer();

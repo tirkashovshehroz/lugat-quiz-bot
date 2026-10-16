@@ -99,6 +99,12 @@ const EXACT = {
   "📢 Kanalga chiqarish": ["📢 Опубликовать в канале", "📢 Post to channel", "📢 Kanalda yayınla"],
   "🔒 Kanaldan yashirish": ["🔒 Скрыть из канала", "🔒 Hide from channel", "🔒 Kanaldan gizle"],
   "🗑 O'chirish": ["🗑 Удалить", "🗑 Delete", "🗑 Sil"],
+  "📢 Hammasini kanalga chiqarish": ["📢 Опубликовать все", "📢 Post all to channel", "📢 Hepsini yayınla"],
+  "📢 Hammasini kanalga so'rash": ["📢 Запросить публикацию всех", "📢 Request all to channel", "📢 Hepsi için yayın iste"],
+  "🔒 Hammasini yashirish": ["🔒 Скрыть все", "🔒 Hide all", "🔒 Hepsini gizle"],
+  "🔕 Hammasini kanaldan olish": ["🔕 Убрать все из канала", "🔕 Remove all from channel", "🔕 Hepsini kanaldan kaldır"],
+  "✅ Ha": ["✅ Да", "✅ Yes", "✅ Evet"],
+  "⬅️ Testlarim": ["⬅️ Мои тесты", "⬅️ My quizzes", "⬅️ Testlerim"],
   "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
   "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
@@ -311,6 +317,14 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/📢 (\d+) ta testni kanalga chiqaraymi\?/g, "📢 Опубликовать тестов в канале: $1?", "📢 Post $1 quizzes to the channel?", "📢 $1 test kanalda yayınlansın mı?"],
+  [/📢 (\d+) ta test uchun muallifga kanalga chiqarish so'rovi yuborilsinmi\?/g, "📢 Отправить автору запрос на публикацию $1 тестов?", "📢 Send the author a request to post $1 quizzes?", "📢 $1 test için yazara yayın isteği gönderilsin mi?"],
+  [/🔒 (\d+) ta testni kanaldan olaymi\?/g, "🔒 Убрать из канала тестов: $1?", "🔒 Remove $1 quizzes from the channel?", "🔒 $1 test kanaldan kaldırılsın mı?"],
+  [/📢 (\d+) ta test kanalga chiqarildi\./g, "📢 Опубликовано тестов: $1.", "📢 $1 quizzes posted.", "📢 $1 test yayınlandı."],
+  [/🔒 (\d+) ta test kanaldan olindi\./g, "🔒 Убрано из канала: $1.", "🔒 $1 quizzes removed from the channel.", "🔒 $1 test kanaldan kaldırıldı."],
+  [/📨 (\d+) ta test uchun so'rov muallifga yuborildi\. Tasdiqlangach kanalda chiqadi\./g, "📨 Запрос по $1 тестам отправлен автору. После одобрения они появятся в канале.", "📨 Request for $1 quizzes sent to the author. They will appear after approval.", "📨 $1 test için istek yazara gönderildi. Onaylanınca kanalda görünür."],
+  [/✅ (\d+) ta testingiz tasdiqlandi va testlar kanaliga chiqarildi!/g, "✅ Одобрено и опубликовано ваших тестов: $1!", "✅ $1 of your quizzes were approved and posted!", "✅ $1 testiniz onaylandı ve yayınlandı!"],
+  [/ℹ️ Hamma testlaringiz allaqachon kanalda/g, "ℹ️ Все ваши тесты уже в канале", "ℹ️ All your quizzes are already in the channel", "ℹ️ Tüm testleriniz zaten kanalda"],
   [/Testni ochish uchun nomini bosing\. Ostidagi tugmalar: 📢 kanalga chiqarish \/ yashirish, 🗑 o'chirish\./g, "Нажмите на название, чтобы открыть тест. Кнопки ниже: 📢 публикация в канале / скрытие, 🗑 удаление.", "Tap a title to open the quiz. Buttons below: 📢 post to / hide from channel, 🗑 delete.", "Testi açmak için adına dokunun. Alttaki düğmeler: 📢 kanalda yayınla / gizle, 🗑 sil."],
   [/📢 — kanalda \(hammaga ochiq\)/g, "📢 — в канале (открыт всем)", "📢 — in the channel (public)", "📢 — kanalda (herkese açık)"],
   [/📢 — kanalda · 🕓 — muallif tasdig'ini kutmoqda/g, "📢 — в канале · 🕓 — ждёт одобрения автора", "📢 — in the channel · 🕓 — awaiting author approval", "📢 — kanalda · 🕓 — yazar onayı bekleniyor"],
