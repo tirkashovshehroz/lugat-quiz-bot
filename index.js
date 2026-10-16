@@ -20,6 +20,7 @@ const BTN_AD = "📣 Reklama berish";
 const BTN_CAT = "🗂 Muallif testlari";
 const BTN_SET = "⚙️ Sozlamalar";
 const BTN_REVIEW = "🧠 Takrorlash";
+const BTN_DONATE = "💝 Qo'llab-quvvatlash";
 const DAY = 86400e3;
 const REVIEW_STEPS = [1, 3, 7]; // xatodan keyin 1 kun, so'ng 3 va 7 kun; 3 marta to'g'ri — o'zlashtirildi
 const REVIEW_MAX = 50; // bitta takrorlash testida eng ko'pi
@@ -30,7 +31,7 @@ const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yok
   "🗂 Fayl qanday bo'lishi kerakligini ko'rish uchun: /namuna";
 const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
 const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }, { text: BTN_REVIEW }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
-  [{ text: BTN_AD }, { text: BTN_SET }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
+  [{ text: BTN_AD }, { text: BTN_SET }], [{ text: BTN_DONATE }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 // Buyruqlar menyusi: hamma uchun va faqat muallif uchun
@@ -44,6 +45,7 @@ const USER_COMMANDS = [
   { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
   { command: "namuna", description: "📄 Namunalar — test fayli qanday bo'ladi" },
   { command: "author", description: "👨‍🏫 Muallif — savol va takliflar" },
+  { command: "donat", description: "💝 Qo'llab-quvvatlash — bot rivojiga hissa" },
   { command: "reklama", description: "📣 Reklama — botga reklama berish" },
   { command: "settings", description: "⚙️ Sozlamalar — til, ma'lumotlarni o'chirish" },
   { command: "lang", description: "🌐 Til — interfeys tilini tanlash" },
@@ -61,6 +63,7 @@ const ADMIN_COMMANDS = [
   { command: "hisobot", description: "📈 Hisobot — guruh testlari va o'quvchilar" },
   { command: "stat", description: "📊 Statistika — foydalanuvchilar va testlar" },
   { command: "materials", description: "📚 Materiallar — yo'riqnoma va namunalar" },
+  { command: "donatsozla", description: "💳 Donat sozlash — karta raqamini kiritish" },
   { command: "bans", description: "🚫 Bloklanganlar — ro'yxat va blokdan chiqarish" },
   { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
   { command: "stop", description: "⏹ To'xtatish — davom etayotgan testni" },
@@ -797,6 +800,22 @@ export class Chat extends DurableObject {
     return this.send(`✅ Namuna qo'shildi: <b>${esc(title)}</b> (jami ${list.length} ta).\nYana fayl yuboring yoki tugating.`,
       { reply_markup: kb([[btn("✅ Tayyor", "mt:done")]]) });
   }
+  // ---------- Donat ----------
+  async donateMenu() {
+    const info = await this.store().getSetting("donate");
+    const admin = this.isAuthor(this.from);
+    if (!info) return this.send("💝 Donat hozircha sozlanmagan." + (admin ? "\nSozlash: /donatsozla" : ""));
+    // Karta raqamlarini bosib nusxalash mumkin bo'lishi uchun <code> ichiga olamiz
+    const body = esc(info).replace(/(?:\d[ -]?){12,19}\d?/g, (x) => `<code>${x.trim()}</code>`);
+    const text = "💝 <b>LingoUP botini qo'llab-quvvatlash</b>\n\nBot bepul ishlaydi. Agar u sizga foydali bo'lsa, rivojiga hissa qo'shishingiz mumkin — har qanday miqdor uchun katta rahmat! 🙏\n\n" +
+      body + "\n\n<i>Karta raqamini bosing — u nusxalanadi.</i>";
+    const rows = admin ? [[btn("✏️ O'zgartirish", "dn:set"), btn("🗑 O'chirish", "dn:del")]] : [];
+    return this.send(text, { reply_markup: kb(rows) });
+  }
+  async donateSetup() {
+    await this.st.put("awaitDonate", 1);
+    return this.send("💳 <b>Donat sozlash</b>\n\nFoydalanuvchilarga ko'rinadigan matnni bitta xabar qilib yuboring. Masalan:\n\n<code>💳 Karta: 8600 1234 5678 9012\n👤 Egasi: Ism Familiya\n🏦 Humo / Uzcard</code>\n\nBir nechta karta yozish mumkin. Karta raqami botning kodida emas, faqat bot sozlamalarida saqlanadi.\nBekor qilish: /cancel");
+  }
   sendAuthor() {
     const a = authorOf(this.env);
     return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇`,
@@ -845,10 +864,10 @@ export class Chat extends DurableObject {
     }
     const isNew = missed.length > 0;
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
-    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds7"))) {
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds8"))) {
       await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
       await this.store().setSetting("authorId", String(uid));
-      await this.st.put("adminCmds7", 1);
+      await this.st.put("adminCmds8", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
@@ -947,6 +966,12 @@ export class Chat extends DurableObject {
       }
     }
     // Muallif reklama postini yuboryapti
+    if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitDonate")) && this.isAuthor(m.from)) {
+      await this.st.delete("awaitDonate");
+      await this.store().setSetting("donate", text.trim().slice(0, 1500));
+      await this.send("✅ Donat ma'lumoti saqlandi. Foydalanuvchilar quyidagicha ko'radi:");
+      return this.donateMenu();
+    }
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitAd")) && this.isAuthor(m.from)) {
       await this.st.delete("awaitAd");
       const kind = m.photo ? "🖼 Rasm" : m.video ? "🎬 Video" : m.animation ? "🎞 GIF" : m.document ? "📄 Fayl" : m.voice ? "🎤 Ovoz" : "📝 Post";
@@ -1036,6 +1061,12 @@ export class Chat extends DurableObject {
           if (!isPrivate) return;
           if (!this.isAuthor(m.from)) return this.adContact();
           return this.adMenu();
+        case "donat":
+        case "donate":
+          return this.donateMenu();
+        case "donatsozla":
+          if (!isPrivate || !this.isAuthor(m.from)) return;
+          return this.donateSetup();
         case "stat":
         case "stats": {
           if (!isPrivate || !this.isAuthor(m.from)) return;
@@ -1095,6 +1126,7 @@ export class Chat extends DurableObject {
         case "cancel":
           await this.st.delete("manual");
           await this.st.delete("awaitAd");
+          await this.st.delete("awaitDonate");
           await this.st.delete("awaitMat");
           await this.st.delete("create");
           await this.st.delete("edit");
@@ -1125,6 +1157,7 @@ export class Chat extends DurableObject {
     if (text === BTN_AUTHOR) return this.sendAuthor();
     if (text === BTN_GUIDE) return this.guideMenu();
     if (text === BTN_REVIEW) return this.reviewMenu(m.from.id);
+    if (text === BTN_DONATE) return this.donateMenu();
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
     if (!text) return;
 
@@ -2207,6 +2240,12 @@ export class Chat extends DurableObject {
       if (act === "g") return this.reportGroup(+a, +b || 0, msgId);
       if (act === "s") return this.reportStudents(+a, msgId);
       return;
+    }
+    if (kind === "dn") {
+      if (!this.isAuthor(cq.from)) return answer();
+      await answer();
+      if (val === "del") { await store.setSetting("donate", ""); return this.edit(msgId, "🗑 Donat ma'lumoti o'chirildi. Qayta sozlash: /donatsozla"); }
+      return this.donateSetup();
     }
     if (kind === "rvm") { await answer(); return this.reviewMenu(uid, msgId); }
     if (kind === "rv" || kind === "rva") { await answer(); return this.startReview(uid, kind === "rva", msgId); }

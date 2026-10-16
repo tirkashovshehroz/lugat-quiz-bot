@@ -86,6 +86,7 @@ const EXACT = {
   "👁 Testni ochish": ["👁 Открыть тест", "👁 Open quiz", "👁 Testi aç"],
   "👤 O'quvchilar bo'yicha hisobot": ["👤 Отчёт по ученикам", "👤 Report by student", "👤 Öğrenci raporu"],
   "⬅️ Guruhlar": ["⬅️ Группы", "⬅️ Groups", "⬅️ Gruplar"],
+  "💝 Qo'llab-quvvatlash": ["💝 Поддержать", "💝 Support", "💝 Destek ol"],
   "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
   "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
@@ -298,6 +299,10 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/💝 <b>LingoUP botini qo'llab-quvvatlash<\/b>/g, "💝 <b>Поддержать бота LingoUP</b>", "💝 <b>Support the LingoUP bot</b>", "💝 <b>LingoUP botunu destekleyin</b>"],
+  [/Bot bepul ishlaydi\. Agar u sizga foydali bo'lsa, rivojiga hissa qo'shishingiz mumkin — har qanday miqdor uchun katta rahmat! 🙏/g, "Бот работает бесплатно. Если он вам полезен, вы можете поддержать его развитие — спасибо за любую сумму! 🙏", "The bot is free. If it helps you, you can support its development — thank you for any amount! 🙏", "Bot ücretsizdir. Size faydalıysa gelişimine katkıda bulunabilirsiniz — her miktar için teşekkürler! 🙏"],
+  [/<i>Karta raqamini bosing — u nusxalanadi\.<\/i>/g, "<i>Нажмите на номер карты, чтобы скопировать.</i>", "<i>Tap the card number to copy it.</i>", "<i>Kopyalamak için kart numarasına dokunun.</i>"],
+  [/💝 Donat hozircha sozlanmagan\./g, "💝 Донат пока не настроен.", "💝 Donations are not set up yet.", "💝 Bağış henüz ayarlanmadı."],
   [/📊 <b>O'qituvchi hisoboti<\/b>/g, "📊 <b>Отчёт учителя</b>", "📊 <b>Teacher report</b>", "📊 <b>Öğretmen raporu</b>"],
   [/Qaysi guruh bo'yicha\?/g, "По какой группе?", "Which group?", "Hangi grup?"],
   [/Hisobotni faqat guruh adminlari ko'ra oladi\./g, "Отчёт видят только админы группы.", "Only group admins can see the report.", "Raporu yalnızca grup yöneticileri görebilir."],
@@ -466,6 +471,8 @@ export const CMD_TR = {
   "📣 Reklama — joylash va boshqarish": ["📣 Реклама — размещение и управление", "📣 Ads — post and manage", "📣 Reklam — yayınla ve yönet"],
   "🔎 Reklama tekshiruvi — kimga yetgani": ["🔎 Проверка рекламы — кому дошла", "🔎 Ad check — who received it", "🔎 Reklam kontrolü — kime ulaştı"],
   "📈 Hisobot — guruh testlari va o'quvchilar": ["📈 Отчёт — тесты групп и ученики", "📈 Report — group quizzes and students", "📈 Rapor — grup testleri ve öğrenciler"],
+  "💝 Qo'llab-quvvatlash — bot rivojiga hissa": ["💝 Поддержать — вклад в развитие бота", "💝 Support — help the bot grow", "💝 Destek ol — botun gelişimine katkı"],
+  "💳 Donat sozlash — karta raqamini kiritish": ["💳 Настройка доната — номер карты", "💳 Donation setup — card number", "💳 Bağış ayarı — kart numarası"],
   "📊 Statistika — foydalanuvchilar va testlar": ["📊 Статистика — пользователи и тесты", "📊 Stats — users and quizzes", "📊 İstatistik — kullanıcılar ve testler"],
   "📚 Materiallar — yo'riqnoma va namunalar": ["📚 Материалы — инструкции и образцы", "📚 Materials — guides and samples", "📚 Materyaller — kılavuz ve örnekler"],
   "🚫 Bloklanganlar — ro'yxat va blokdan chiqarish": ["🚫 Заблокированные — список и разблокировка", "🚫 Banned — list and unban", "🚫 Engellenenler — liste ve kaldırma"],
