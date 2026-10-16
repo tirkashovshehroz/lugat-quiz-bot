@@ -990,10 +990,8 @@ export class Chat extends DurableObject {
       if (isPrivate) await this.st.delete("awaitMat");
       switch (cmd.toLowerCase()) {
         case "start":
-          // Shaxsiy chatda har safar /start bosilganda avval til tanlanadi, so'ng shu tilda davom etadi
-          if (isPrivate) {
+          if (isPrivate && !(await this.st.get("lang"))) {
             if (arg) await this.st.put("langStart", arg);
-            else await this.st.delete("langStart");
             return this.langPicker();
           }
           if (arg) return this.openQuiz(arg, m.from, m.chat.type);
