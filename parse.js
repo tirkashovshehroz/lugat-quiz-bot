@@ -61,8 +61,48 @@ function tidy(s) {
   return s.replace(/\s+([,.;:)])/g, "$1").replace(/\(\s+/g, "(").replace(/(\p{L}) -(\p{L})/gu, "$1-$2").replace(/\s+/g, " ").trim();
 }
 
+// Ikki ustunli sahifada qo'shni ustundagi yozuv bir qatorga yopishib qolishi mumkin:
+// "tarla - dala 131 tükenmek - tugamoq" → "tarla - dala" + "131 tükenmek - tugamoq".
+// Shuningdek qator oxiriga yopishgan sarlavha ("… İSİMLER — OTLAR") alohida qatorga ajratiladi.
+const WORD_SEP = /\s[-–—=]\s|\t/;
+function explodeLine(l) {
+  if (!WORD_SEP.test(l)) return [l];
+  const parts = [];
+  let rest = l;
+  for (;;) {
+    // keyingi "raqam + so'z ... - ..." boshlanishini qidiramiz (qator boshidan tashqari)
+    const re = /\s(\d{1,4})[.)]?\s+(?=\p{L})/gu;
+    let m, cut = -1;
+    while ((m = re.exec(rest))) {
+      const head = rest.slice(0, m.index), tail = rest.slice(m.index + 1);
+      if (WORD_SEP.test(head) && WORD_SEP.test(tail.replace(/^\d{1,4}[.)]?\s+/, ""))) { cut = m.index; break; }
+    }
+    if (cut < 0) break;
+    parts.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut + 1).trim();
+  }
+  parts.push(rest);
+  // Qator oxiriga yopishgan katta harfli sarlavha
+  const out = [], heads = [];
+  for (const p of parts) {
+    const w = p.split(" ");
+    let done = false;
+    for (let k = 1; k < w.length - 1 && !done; k++) {
+      const suf = w.slice(k).join(" ");
+      if (/\s[—–]\s/.test(suf) && isHeader(suf) && WORD_SEP.test(w.slice(0, k).join(" "))) {
+        out.push(w.slice(0, k).join(" "));
+        heads.push(suf);
+        done = true;
+      }
+    }
+    if (!done) out.push(p);
+  }
+  return out.concat(heads);
+}
+
 export function parseLines(rawLines) {
-  const lines = rawLines.map((l) => l.replace(IMG, "").replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean);
+  const lines = rawLines.map((l) => l.replace(IMG, "").replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean)
+    .flatMap(explodeLine);
   const sepLines = lines.filter((l) => splitLine(l));
   const numbered = sepLines.length > 0 && sepLines.filter((l) => NUMBERED.test(l)).length >= sepLines.length * 0.6;
   let title = null;
