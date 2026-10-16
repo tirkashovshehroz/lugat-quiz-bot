@@ -82,7 +82,7 @@ export function rowLines(cells) {
   if (c.length && isNumCell(c[0])) num = parseInt(c.shift(), 10);
   // Sarlavha qatori ("№ | Savol | A | B | C | D | Javob" yoki "So'z | Tarjima") — o'tkazib yuboramiz
   if (c.some((x, i) => x.toUpperCase() === "A" && (c[i + 1] || "").toUpperCase() === "B")) return [];
-  const HEAD = /^(№|#|n|no|savol|savollar|javob|to['‘’`ʻ]?g['‘’`ʻ]?ri javob|izoh|so['‘’`ʻ]z|so['‘’`ʻ]zlar|tarjima|tarjimasi|ma['‘’`ʻ]nosi|word|words|translation|question|answer|explanation|слово|перевод|вопрос|ответ|kelime|çeviri|soru|cevap|açıklama|turkcha|o['‘’`ʻ]zbekcha|inglizcha|ruscha)$/i;
+  const HEAD = /^(№|#|n|no|savol|savollar|javob|to['‘’`ʻ]?g['‘’`ʻ]?ri javob|izoh|so['‘’`ʻ]z|so['‘’`ʻ]zlar|tarjima|tarjimasi|ma['‘’`ʻ]nosi|word|words|translation|question|answer|explanation|слово|перевод|вопрос|ответ|kelime|çeviri|soru|cevap|açıklama|turkcha|o['‘’`ʻ]zbekcha|inglizcha|ruscha|nemischa|arabcha|koreyscha|xitoycha|yaponcha|fransuzcha|talaffuz|talaffuzi|transkripsiya|pronunciation|transcription|произношение|транскрипция|русский|узбекский|английский|турецкий|okunuş|telaffuz|türkçe|özbekçe|rusça|english|russian|uzbek|turkish)$/i;
   if (c.length >= 2 && c.every((x) => HEAD.test(x.trim()))) return [];
   const asMcq = (q, opts, ans, exp) => [`${num || 1}. ${q}`, ...opts.map((o, i) => `${"ABCDEFGHIJ"[i]}) ${o}`), `Javob: ${ans}`,
     ...(exp ? [`Izoh: ${exp}`] : [])];

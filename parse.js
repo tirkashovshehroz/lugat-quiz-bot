@@ -102,7 +102,8 @@ function explodeLine(l) {
 }
 
 export function parseLines(rawLines) {
-  const lines = rawLines.map((l) => l.replace(IMG, "").replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean)
+  // Rus so'zlaridagi urg'u (talaffuz) belgisi olib tashlanadi: "приве́т" → "привет"
+  const lines = rawLines.map((l) => l.replace(IMG, "").replace(/(?<=[\u0400-\u04FF])\u0301/g, "").replace(/[^\S\t]+/g, " ").replace(/ *\t */g, "\t").trim()).filter(Boolean)
     .flatMap(explodeLine);
   const sepLines = lines.filter((l) => splitLine(l));
   const numbered = sepLines.length > 0 && sepLines.filter((l) => NUMBERED.test(l)).length >= sepLines.length * 0.6;
