@@ -52,6 +52,7 @@ const ADMIN_COMMANDS = [
   { command: "reklama", description: "📣 Reklama boshqaruvi" },
   { command: "stat", description: "📊 Bot statistikasi" },
   { command: "adcheck", description: "🔎 Reklama yetkazilishini tekshirish" },
+  { command: "backup", description: "💾 Zaxira nusxa olish" },
   { command: "materials", description: "📚 Yo'riqnoma va namunalarni boshqarish" },
   { command: "bans", description: "🚫 Bloklanganlar ro'yxati" },
   { command: "guide", description: "📖 Yo'riqnoma va namunalar" },
@@ -128,7 +129,7 @@ const shuffle = (a) => {
 };
 const sample = (a, n) => shuffle([...a]).slice(0, n);
 // n tani har biri `size` tadan qismlarga bo'lish; oxirgi qism 5 tadan kam bo'lsa, oldingisiga qo'shiladi
-const MAX_PARTS = 20;
+const MAX_PARTS = 100;
 function splitSizes(n, size) {
   size = Math.max(1, Math.min(size, n));
   const out = [];
@@ -402,6 +403,13 @@ export class Store extends DurableObject {
   }
   markBlocked(uid) {
     this.sql.exec("UPDATE users SET blocked=1 WHERE uid=?", uid);
+  }
+  // Zaxira nusxa: barcha jadvallar (JSON)
+  exportAll() {
+    const tables = this.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").toArray().map((r) => r.name);
+    const out = { bot: "LingoUP", version: 1, created: new Date().toISOString(), tables: {} };
+    for (const t of tables) out.tables[t] = this.sql.exec(`SELECT * FROM "${t}"`).toArray();
+    return JSON.stringify(out);
   }
   userInfo(uid) {
     const u = this.sql.exec("SELECT created, blocked FROM users WHERE uid=?", uid).toArray()[0] || null;
@@ -739,10 +747,10 @@ export class Chat extends DurableObject {
     }
     const isNew = missed.length > 0;
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
-    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds3"))) {
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds4"))) {
       await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
       await this.store().setSetting("authorId", String(uid));
-      await this.st.put("adminCmds3", 1);
+      await this.st.put("adminCmds4", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
@@ -872,6 +880,24 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "backup": {
+          if (!isPrivate || !this.isAuthor(m.from)) return;
+          await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+          const json = await this.store().exportAll();
+          const data = JSON.parse(json);
+          const gz = await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+          const d = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+          const fd = new FormData();
+          fd.append("chat_id", String(this.chatId));
+          fd.append("caption", `💾 LingoUP zaxira nusxasi — ${fmtDate(Date.now())}\n\n` +
+            Object.entries(data.tables).map(([t, rows]) => `${t}: ${rows.length}`).join("\n") +
+            "\n\nBu faylni xavfsiz joyda saqlang. Kerak bo'lsa, ma'lumotlarni shu fayldan tiklash mumkin.");
+          fd.append("document", new Blob([gz], { type: "application/gzip" }), `LingoUP_backup_${d}.json.gz`);
+          const r = await fetch(`https://api.telegram.org/bot${this.env.BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+          const j = await r.json().catch(() => ({ ok: false, description: "javob o'qilmadi" }));
+          if (!j.ok) return this.send(`❗ Zaxira faylni yuborib bo'lmadi: <code>${esc(j.description || "")}</code>`);
+          return;
+        }
         case "myid":
         case "id":
           return this.send(`🆔 Sizning ID raqamingiz: <code>${m.from.id}</code>`);
@@ -978,7 +1004,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-16 · qismlarga bo'lish</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-16 · pullik tarif</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -1332,7 +1358,8 @@ export class Chat extends DurableObject {
     await this.st.delete("create");
     const text = `👍 <b>${made.length} ta test yaratildi!</b>\n<b>${esc(create.title)}</b> — ${n} ta ${create.mcq ? "savol" : "so'z"}, ` +
       `${create.split.order === "rnd" ? "aralashtirib" : "fayldagi tartibda"} bo'lindi.\n\n` +
-      made.map((m) => `${m.bad ? "⏳" : "🎲"} ${esc(m.title)} — ${m.n} ta savol`).join("\n") +
+      made.slice(0, 30).map((m) => `${m.bad ? "⏳" : "🎲"} ${esc(m.title)} — ${m.n} ta savol`).join("\n") +
+      (made.length > 30 ? `\n… va yana ${made.length - 30} ta (hammasi 📚 Testlarim'da)` : "") +
       (pending ? `\n\n⏳ ${pending} ta qism tekshiruvga yuborildi (muallif ko'rib chiqadi).` : "") +
       (author ? "\n\n🔒 Hozircha faqat sizga ko'rinadi. Har bir testni ochib «🌐 Hammaga ko'rsatish» ni bosishingiz mumkin."
         : this.env.TESTS_CHANNEL ? "\n\n📢 Kanalga joylash uchun testni ochib «📢 Kanalga joylash» ni bosing." : "") +
@@ -2260,9 +2287,9 @@ const fmtDate = (t) => {
 };
 
 // ---------------- Reklama tarqatuvchi (navbat bilan, Telegram limitlariga mos) ----------------
-// Cloudflare bepul tarifida bitta ishga tushishda ~50 ta tashqi so'rov mumkin.
+// Cloudflare pullik tarifida bitta ishga tushishda 1000+ tashqi so'rov mumkin.
 // Har bir foydalanuvchiga 2 tagacha so'rov (yuborish + qadash) ketadi, shuning uchun kichik bo'laklarda ishlaymiz.
-const BATCH = 8;
+const BATCH = 40;
 const MAX_ERRORS = 5;
 export class Caster extends DurableObject {
   constructor(ctx, env) {
