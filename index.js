@@ -40,6 +40,7 @@ const USER_COMMANDS = [
   { command: "mytests", description: "📚 Testlarim — ochish, tahrirlash, o'chirish" },
   { command: "tests", description: "🗂 Muallif testlari — tayyor testlar" },
   { command: "takrorlash", description: "🧠 Takrorlash — xato so'zlaringizdan test" },
+  { command: "hisobot", description: "📈 Hisobot — guruh testlari va o'quvchilar" },
   { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
   { command: "namuna", description: "📄 Namunalar — test fayli qanday bo'ladi" },
   { command: "author", description: "👨‍🏫 Muallif — savol va takliflar" },
@@ -57,6 +58,7 @@ const ADMIN_COMMANDS = [
   { command: "takrorlash", description: "🧠 Takrorlash — xato so'zlaringizdan test" },
   { command: "reklama", description: "📣 Reklama — joylash va boshqarish" },
   { command: "adcheck", description: "🔎 Reklama tekshiruvi — kimga yetgani" },
+  { command: "hisobot", description: "📈 Hisobot — guruh testlari va o'quvchilar" },
   { command: "stat", description: "📊 Statistika — foydalanuvchilar va testlar" },
   { command: "materials", description: "📚 Materiallar — yo'riqnoma va namunalar" },
   { command: "bans", description: "🚫 Bloklanganlar — ro'yxat va blokdan chiqarish" },
@@ -264,6 +266,12 @@ export class Store extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS deliveries(ad INTEGER, uid INTEGER, msgs TEXT, PRIMARY KEY(ad, uid))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS review(uid INTEGER, qid TEXT, k TEXT, title TEXT, q TEXT, stage INTEGER, due INTEGER,
       PRIMARY KEY(uid, qid, k))`);
+    // O'qituvchi hisoboti: guruhda o'tkazilgan testlar
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS games(id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER, chatTitle TEXT, qid TEXT, title TEXT,
+      starter INTEGER, created INTEGER, asked INTEGER)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS game_scores(game INTEGER, uid INTEGER, name TEXT, ok INTEGER, bad INTEGER, secs REAL, PRIMARY KEY(game, uid))`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS game_words(game INTEGER, q TEXT, ans TEXT, wrong INTEGER, total INTEGER)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS review_done(uid INTEGER PRIMARY KEY, n INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS bans(uid INTEGER PRIMARY KEY, name TEXT, reason TEXT, created INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS results(qid TEXT, uid INTEGER, name TEXT, ok INTEGER, total INTEGER,
       secs REAL, created INTEGER, PRIMARY KEY(qid, uid))`);
@@ -438,13 +446,56 @@ export class Store extends DurableObject {
         const r = this.sql.exec("SELECT MAX(stage) AS stage FROM review WHERE uid=? AND k=?", uid, k).toArray()[0];
         if (r?.stage == null) continue;
         const st = r.stage + 1;
-        if (st >= REVIEW_STEPS.length) { this.sql.exec("DELETE FROM review WHERE uid=? AND k=?", uid, k); mastered++; }
+        if (st >= REVIEW_STEPS.length) {
+          this.sql.exec("DELETE FROM review WHERE uid=? AND k=?", uid, k); mastered++;
+          this.sql.exec("INSERT INTO review_done VALUES(?,1) ON CONFLICT(uid) DO UPDATE SET n=n+1", uid);
+        }
         else { this.sql.exec("UPDATE review SET stage=?, due=? WHERE uid=? AND k=?", st, now + REVIEW_STEPS[st] * DAY, uid, k); advanced++; }
         wrongKeys.add(k);
       }
     }
     const left = this.sql.exec("SELECT COUNT(DISTINCT k) AS n FROM review WHERE uid=?", uid).toArray()[0].n;
     return { added, mastered, advanced, left };
+  }
+  // ---- O'qituvchi hisoboti ----
+  saveGame(g) {
+    this.sql.exec("INSERT INTO games(chat,chatTitle,qid,title,starter,created,asked) VALUES(?,?,?,?,?,?,?)",
+      g.chat, g.chatTitle || "", g.qid, g.title, g.starter, Date.now(), g.asked);
+    const id = this.sql.exec("SELECT last_insert_rowid() AS id").toArray()[0].id;
+    for (const u of g.scores) this.sql.exec("INSERT OR REPLACE INTO game_scores VALUES(?,?,?,?,?,?)", id, u.uid, u.name, u.ok, u.bad, u.t);
+    for (const w of g.words) this.sql.exec("INSERT INTO game_words VALUES(?,?,?,?,?)", id, w.q, w.ans, w.wrong, w.total);
+    return id;
+  }
+  groupsOf(uid) {
+    return this.sql.exec(`SELECT chat, MAX(chatTitle) AS title, COUNT(*) AS n, MAX(created) AS last FROM games
+      WHERE chat IN (SELECT DISTINCT chat FROM games WHERE starter=? UNION SELECT DISTINCT g.chat FROM games g JOIN game_scores s ON s.game=g.id WHERE s.uid=?)
+      GROUP BY chat ORDER BY last DESC LIMIT 15`, uid, uid).toArray();
+  }
+  groupGames(chat, offset = 0, n = 10) {
+    const total = this.sql.exec("SELECT COUNT(*) AS n FROM games WHERE chat=?", chat).toArray()[0].n;
+    const rows = this.sql.exec(`SELECT g.id, g.title, g.created, g.asked, (SELECT COUNT(*) FROM game_scores s WHERE s.game=g.id) AS players
+      FROM games g WHERE chat=? ORDER BY id DESC LIMIT ? OFFSET ?`, chat, n, offset).toArray();
+    return { total, rows, title: this.sql.exec("SELECT chatTitle FROM games WHERE chat=? ORDER BY id DESC LIMIT 1", chat).toArray()[0]?.chatTitle || "" };
+  }
+  gameReport(id) {
+    const g = this.sql.exec("SELECT * FROM games WHERE id=?", id).toArray()[0];
+    if (!g) return null;
+    const scores = this.sql.exec("SELECT uid, name, ok, bad, secs FROM game_scores WHERE game=? ORDER BY ok DESC, secs ASC", id).toArray();
+    const words = this.sql.exec("SELECT q, ans, wrong, total FROM game_words WHERE game=? AND wrong>0 ORDER BY wrong*1.0/total DESC, wrong DESC LIMIT 15", id).toArray();
+    return { g, scores, words };
+  }
+  groupStudents(chat) {
+    const rows = this.sql.exec(`SELECT s.uid, MAX(s.name) AS name, COUNT(*) AS games, SUM(s.ok) AS ok, SUM(g.asked) AS asked
+      FROM game_scores s JOIN games g ON g.id=s.game WHERE g.chat=? GROUP BY s.uid ORDER BY SUM(s.ok)*1.0/MAX(SUM(g.asked),1) DESC LIMIT 60`, chat).toArray();
+    const now = Date.now();
+    for (const r of rows) {
+      const solo = this.sql.exec("SELECT COUNT(*) AS n, AVG(ok*1.0/MAX(total,1)) AS avg FROM results WHERE uid=?", r.uid).toArray()[0];
+      const rv = this.sql.exec("SELECT COUNT(DISTINCT k) AS n, COUNT(DISTINCT CASE WHEN due<=? THEN k END) AS due FROM review WHERE uid=?", now, r.uid).toArray()[0];
+      r.solo = solo.n || 0; r.soloAvg = solo.avg == null ? null : Math.round(solo.avg * 100);
+      r.review = rv.n || 0; r.due = rv.due || 0;
+      r.mastered = this.sql.exec("SELECT n FROM review_done WHERE uid=?", r.uid).toArray()[0]?.n || 0;
+    }
+    return rows;
   }
   reviewSummary(uid) {
     const r = this.sql.exec(`SELECT COUNT(DISTINCT k) AS total, COUNT(DISTINCT CASE WHEN due<=? THEN k END) AS due, MIN(CASE WHEN due>? THEN due END) AS next
@@ -794,10 +845,10 @@ export class Chat extends DurableObject {
     }
     const isNew = missed.length > 0;
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
-    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds6"))) {
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds7"))) {
       await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
       await this.store().setSetting("authorId", String(uid));
-      await this.st.put("adminCmds6", 1);
+      await this.st.put("adminCmds7", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
@@ -927,6 +978,19 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "hisobot":
+        case "report": {
+          if (isPrivate) return this.reportHome(m.from.id);
+          if (!isGroup) return;
+          if (!(await this.isGroupAdmin(this.chatId, m.from.id))) return this.send("📊 Hisobotni faqat guruh adminlari ko'ra oladi.");
+          const r = await this.tgx("sendMessage", { chat_id: m.from.id, text: "📊 Hisobot tayyorlanmoqda…" });
+          if (!r.ok) return this.send("📊 Hisobotni shaxsiy xabarda yuboraman — avval botga /start bosing, keyin /hisobot ni qayta yozing.");
+          const tmp = this.chatId;
+          this.chatId = m.from.id;
+          await this.reportGroup(tmp, 0, r.result.message_id);
+          this.chatId = tmp;
+          return this.send("📊 Hisobot sizga shaxsiy xabarda yuborildi.");
+        }
         case "takrorlash":
         case "review":
           return isPrivate ? this.reviewMenu(m.from.id) : null;
@@ -1454,6 +1518,55 @@ export class Chat extends DurableObject {
     const text = `📚 <b>Sizning testlaringiz</b> (${total} ta)` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
       "\n\nTestni ochish uchun nomini bosing, o'chirish uchun yonidagi 🗑 ni bosing.";
     return editId ? this.edit(editId, text, { reply_markup: kb(kbRows) }) : this.send(text, { reply_markup: kb(kbRows) });
+  }
+
+  // ---------- O'qituvchi hisoboti ----------
+  async isGroupAdmin(chat, uid) {
+    if (this.isAuthor(this.from)) return true;
+    const m = await this.tgx("getChatMember", { chat_id: chat, user_id: uid });
+    return ["administrator", "creator"].includes(m.result?.status);
+  }
+  async reportHome(uid, editId) {
+    const groups = await this.store().groupsOf(uid);
+    const text = groups.length ? "📊 <b>O'qituvchi hisoboti</b>\n\nQaysi guruh bo'yicha?\n<i>Hisobotni faqat guruh adminlari ko'ra oladi.</i>"
+      : "📊 <b>O'qituvchi hisoboti</b>\n\nHali guruhda test o'tkazilmagan.\nTestni guruhda «👥 Guruhda boshlash» orqali o'tkazing — natijalar shu yerda yig'iladi. Guruhning o'zida /hisobot yozsangiz ham bo'ladi.";
+    const rows = groups.map((g) => [btn(`👥 ${g.title || g.chat} · ${g.n} ta test`.slice(0, 60), `hr:g:${g.chat}:0`)]);
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async reportGroup(chat, page, editId) {
+    const PER = 10;
+    const r = await this.store().groupGames(chat, page * PER, PER);
+    const pages = Math.max(1, Math.ceil(r.total / PER));
+    const text = `📊 <b>${esc(r.title || "Guruh")}</b>\n\n🎲 O'tkazilgan testlar: ${r.total}` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
+      "\n\nTestni tanlang — kim qatnashgani, ballar va eng ko'p xato qilingan so'zlar chiqadi.";
+    const rows = r.rows.map((g) => [btn(`${fmtDate(g.created).slice(0, 5)} · ${g.title} · 👥${g.players}`.slice(0, 60), `hr:d:${g.id}`)]);
+    const nav = [];
+    if (page > 0) nav.push(btn("⬅️ Oldingi", `hr:g:${chat}:${page - 1}`));
+    if (page < pages - 1) nav.push(btn("Keyingi ➡️", `hr:g:${chat}:${page + 1}`));
+    if (nav.length) rows.push(nav);
+    rows.push([btn("👤 O'quvchilar bo'yicha hisobot", `hr:s:${chat}`)], [btn("⬅️ Guruhlar", "hr:home")]);
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async reportGame(id, editId) {
+    const r = await this.store().gameReport(+id);
+    if (!r) return this.edit(editId, "❗ Hisobot topilmadi.");
+    const { g, scores, words } = r;
+    const medals = ["🥇", "🥈", "🥉"];
+    let text = `🎲 <b>${esc(g.title)}</b>\n👥 ${esc(g.chatTitle)} · ${fmtDate(g.created)}\n🖊 ${g.asked} ta savol · 👤 ${scores.length} ta qatnashchi\n\n<b>Natijalar:</b>\n` +
+      scores.slice(0, 40).map((u, i) => `${medals[i] || i + 1 + "."} ${esc(u.name)} — <b>${u.ok}</b>/${g.asked} (${Math.round(u.ok * 100 / Math.max(g.asked, 1))}%), ❌ ${u.bad}`).join("\n");
+    if (scores.length > 40) text += `\n… yana ${scores.length - 40} kishi`;
+    if (words.length) text += "\n\n<b>Eng ko'p xato qilingan so'zlar:</b>\n" +
+      words.map((w) => `• ${esc(w.q)} → <i>${esc(w.ans)}</i> — ${w.wrong}/${w.total} kishi xato (${Math.round(w.wrong * 100 / w.total)}%)`).join("\n");
+    else text += "\n\n✅ Hech bir so'zda xato bo'lmadi.";
+    return this.edit(editId, text.slice(0, 4000), { reply_markup: kb([[btn("⬅️ Orqaga", `hr:g:${g.chat}:0`)]]) });
+  }
+  async reportStudents(chat, editId) {
+    const rows = await this.store().groupStudents(chat);
+    let text = "👤 <b>O'quvchilar bo'yicha hisobot</b>\n<i>Guruhdagi testlar · botdagi barcha testlari · takrorlash</i>\n\n";
+    text += rows.length ? rows.map((r, i) => `${i + 1}. <b>${esc(r.name)}</b>\n   👥 Guruhda: ${r.games} ta test, ${Math.round(r.ok * 100 / Math.max(r.asked, 1))}% to'g'ri` +
+      `\n   📚 Jami yechgan testlari: ${r.solo} ta${r.soloAvg != null ? `, o'rtacha ${r.soloAvg}% (eng yaxshi urinishlar)` : ""}` +
+      `\n   🧠 Takrorlash: ${r.review} ta so'z${r.due ? ` (bugun ${r.due})` : ""}, ✅ o'zlashtirgan: ${r.mastered}`).join("\n") : "Hali ma'lumot yo'q.";
+    return this.edit(editId, text.slice(0, 4000), { reply_markup: kb([[btn("⬅️ Orqaga", `hr:g:${chat}:0`)]]) });
   }
 
   // Takrorlash: o'quvchining barcha testlardagi xatolaridan bitta umumiy test
@@ -2081,6 +2194,20 @@ export class Chat extends DurableObject {
       await answer();
       return this.prepareSession(quiz, uid, type);
     }
+    if (kind === "hr") {
+      await answer();
+      const [act, a, b] = val.split(":");
+      if (act === "home") return this.reportHome(uid, msgId);
+      if (act === "d") {
+        const r = await store.gameReport(+a);
+        if (!r || !(await this.isGroupAdmin(r.g.chat, uid))) return this.edit(msgId, "❗ Bu hisobot faqat guruh adminlari uchun.");
+        return this.reportGame(a, msgId);
+      }
+      if (!(await this.isGroupAdmin(+a, uid))) return this.edit(msgId, "❗ Bu hisobot faqat guruh adminlari uchun.");
+      if (act === "g") return this.reportGroup(+a, +b || 0, msgId);
+      if (act === "s") return this.reportStudents(+a, msgId);
+      return;
+    }
     if (kind === "rvm") { await answer(); return this.reviewMenu(uid, msgId); }
     if (kind === "rv" || kind === "rva") { await answer(); return this.startReview(uid, kind === "rva", msgId); }
     if (kind === "retry") {
@@ -2247,6 +2374,7 @@ export class Chat extends DurableObject {
     sc[ok ? "ok" : "bad"]++;
     sc.t += (Date.now() - sess.cur.sent) / 1000;
     if (!sess.isGroup && !ok) sess.wrong.push(q.pair);
+    if (sess.isGroup) { const st = ((sess.qstat ??= {})[sess.idx] ??= [0, 0]); st[1]++; if (!ok) st[0]++; }
     if (!sess.isGroup && ok) (sess.right ??= []).push(q.pair);
     await this.st.put("sess", sess);
     if (!sess.isGroup) await this.st.setAlarm(Date.now() + 1000);
@@ -2280,6 +2408,15 @@ export class Chat extends DurableObject {
     if (s.isGroup) {
       const board = Object.entries(s.scores).sort(([, a], [, b]) => b.ok - a.ok || a.t - b.t);
       if (s.record) for (const [uid, u] of board) await store.addResult(s.qid, +uid, u.name, u.ok, s.asked, u.t);
+      if (s.asked && board.length) {
+        const chatInfo = await this.tgx("getChat", { chat_id: this.chatId });
+        const words = Object.entries(s.qstat || {}).map(([i, [wrong, total]]) => {
+          const q = s.questions[+i];
+          return { q: String(q?.q || "").slice(0, 120), ans: String(q?.opts?.[q.correct] ?? "").slice(0, 80), wrong, total };
+        });
+        await store.saveGame({ chat: this.chatId, chatTitle: chatInfo.result?.title || "", qid: s.qid, title: s.title, starter: s.starter, asked: s.asked,
+          scores: board.map(([uid, u]) => ({ uid: +uid, name: u.name, ok: u.ok, bad: u.bad, t: u.t })), words });
+      }
       let text = `🏁 <b>${title}</b> testi yakunlandi!\n`;
       if (s.note) text += `<i>${s.note}</i>\n`;
       text += `\n${s.asked} ta savolga javob berildi.\n\n`;
