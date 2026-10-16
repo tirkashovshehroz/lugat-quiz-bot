@@ -19,45 +19,50 @@ const BTN_GUIDE = "📖 Yo'riqnoma";
 const BTN_AD = "📣 Reklama berish";
 const BTN_CAT = "🗂 Muallif testlari";
 const BTN_SET = "⚙️ Sozlamalar";
+const BTN_REVIEW = "🧠 Takrorlash";
+const DAY = 86400e3;
+const REVIEW_STEPS = [1, 3, 7]; // xatodan keyin 1 kun, so'ng 3 va 7 kun; 3 marta to'g'ri — o'zlashtirildi
+const REVIEW_MAX = 50; // bitta takrorlash testida eng ko'pi
 const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yoki .txt faylni yuboring yoki matnni xabar qilib yozing.\n" +
   "Savol ostiga <code>Izoh: ...</code> yozsangiz — javobdan keyin tushuntirish chiqadi. Word ichidagi rasmlar savolga o'zi biriktiriladi.\n\n" +
   "✍️ <b>2-usul — QuizBot kabi, bittalab:</b> 📎 → <b>So'rovnoma</b> → <b>Viktorina</b> rejimini yoqing, to'g'ri javobni belgilang (izoh ham yozish mumkin) va shu yerga yuboring.\n" +
   "🖼 Rasmli savol uchun avval rasmni yuboring, keyin viktorinani.\n\n" +
   "🗂 Fayl qanday bo'lishi kerakligini ko'rish uchun: /namuna";
 const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
-const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }, { text: BTN_REVIEW }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
   [{ text: BTN_AD }, { text: BTN_SET }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 // Buyruqlar menyusi: hamma uchun va faqat muallif uchun
 const USER_COMMANDS = [
-  { command: "start", description: "Boshlash" },
-  { command: "newquiz", description: "Yangi test yaratish" },
-  { command: "mytests", description: "Mening testlarim" },
-  { command: "tests", description: "🗂 Muallif testlari" },
-  { command: "guide", description: "📖 Yo'riqnoma va namunalar" },
-  { command: "namuna", description: "🗂 Namuna fayllar" },
-  { command: "reklama", description: "📣 Botga reklama berish" },
-  { command: "author", description: "Muallif bilan bog'lanish" },
-  { command: "settings", description: "⚙️ Sozlamalar" },
-  { command: "lang", description: "🌐 Til / Language" },
-  { command: "stop", description: "Testni to'xtatish" },
-  { command: "cancel", description: "Bekor qilish" },
+  { command: "start", description: "🏠 Bosh menyu — botni ishga tushirish" },
+  { command: "newquiz", description: "➕ Yangi test — fayldan yoki bittalab" },
+  { command: "mytests", description: "📚 Testlarim — ochish, tahrirlash, o'chirish" },
+  { command: "tests", description: "🗂 Muallif testlari — tayyor testlar" },
+  { command: "takrorlash", description: "🧠 Takrorlash — xato so'zlaringizdan test" },
+  { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
+  { command: "namuna", description: "📄 Namunalar — test fayli qanday bo'ladi" },
+  { command: "author", description: "👨‍🏫 Muallif — savol va takliflar" },
+  { command: "reklama", description: "📣 Reklama — botga reklama berish" },
+  { command: "settings", description: "⚙️ Sozlamalar — til, ma'lumotlarni o'chirish" },
+  { command: "lang", description: "🌐 Til — interfeys tilini tanlash" },
+  { command: "stop", description: "⏹ To'xtatish — davom etayotgan testni" },
+  { command: "cancel", description: "❌ Bekor qilish — joriy amalni" },
 ];
 const ADMIN_COMMANDS = [
-  { command: "start", description: "Boshlash" },
-  { command: "newquiz", description: "Yangi test yaratish" },
-  { command: "mytests", description: "Mening testlarim" },
-  { command: "tests", description: "🗂 Muallif testlari" },
-  { command: "reklama", description: "📣 Reklama boshqaruvi" },
-  { command: "stat", description: "📊 Bot statistikasi" },
-  { command: "adcheck", description: "🔎 Reklama yetkazilishini tekshirish" },
-  { command: "backup", description: "💾 Zaxira nusxa olish" },
-  { command: "materials", description: "📚 Yo'riqnoma va namunalarni boshqarish" },
-  { command: "bans", description: "🚫 Bloklanganlar ro'yxati" },
-  { command: "guide", description: "📖 Yo'riqnoma va namunalar" },
-  { command: "stop", description: "Testni to'xtatish" },
-  { command: "cancel", description: "Bekor qilish" },
+  { command: "start", description: "🏠 Bosh menyu — botni ishga tushirish" },
+  { command: "newquiz", description: "➕ Yangi test — fayldan yoki bittalab" },
+  { command: "mytests", description: "📚 Testlarim — ochish, tahrirlash, o'chirish" },
+  { command: "tests", description: "🗂 Muallif testlari — katalog" },
+  { command: "takrorlash", description: "🧠 Takrorlash — xato so'zlaringizdan test" },
+  { command: "reklama", description: "📣 Reklama — joylash va boshqarish" },
+  { command: "adcheck", description: "🔎 Reklama tekshiruvi — kimga yetgani" },
+  { command: "stat", description: "📊 Statistika — foydalanuvchilar va testlar" },
+  { command: "materials", description: "📚 Materiallar — yo'riqnoma va namunalar" },
+  { command: "bans", description: "🚫 Bloklanganlar — ro'yxat va blokdan chiqarish" },
+  { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
+  { command: "stop", description: "⏹ To'xtatish — davom etayotgan testni" },
+  { command: "cancel", description: "❌ Bekor qilish — joriy amalni" },
 ];
 
 const HELP =
@@ -248,7 +253,7 @@ export class Store extends DurableObject {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS quizzes(id TEXT PRIMARY KEY, owner INTEGER, title TEXT,
       pairs TEXT, count INTEGER, direction TEXT, timer INTEGER, created INTEGER)`);
-    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER", "public INTEGER DEFAULT 0", "status TEXT DEFAULT 'ok'"]) {
+    for (const col of ["description TEXT", "shuffle TEXT", "questions TEXT", "chanMsg INTEGER", "public INTEGER DEFAULT 0", "status TEXT DEFAULT 'ok'", "chanReq TEXT"]) {
       try { this.sql.exec(`ALTER TABLE quizzes ADD COLUMN ${col}`); } catch {}
     }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS polls(id TEXT PRIMARY KEY, chat TEXT, created INTEGER)`);
@@ -257,6 +262,8 @@ export class Store extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS ads(id INTEGER PRIMARY KEY AUTOINCREMENT, fromChat INTEGER, msgIds TEXT, pin INTEGER,
       title TEXT, created INTEGER, expires INTEGER, active INTEGER DEFAULT 1, sent INTEGER DEFAULT 0, fail INTEGER DEFAULT 0)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS deliveries(ad INTEGER, uid INTEGER, msgs TEXT, PRIMARY KEY(ad, uid))`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS review(uid INTEGER, qid TEXT, k TEXT, title TEXT, q TEXT, stage INTEGER, due INTEGER,
+      PRIMARY KEY(uid, qid, k))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS bans(uid INTEGER PRIMARY KEY, name TEXT, reason TEXT, created INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS results(qid TEXT, uid INTEGER, name TEXT, ok INTEGER, total INTEGER,
       secs REAL, created INTEGER, PRIMARY KEY(qid, uid))`);
@@ -312,6 +319,7 @@ export class Store extends DurableObject {
     this.sql.exec("DELETE FROM quizzes WHERE owner=?", uid);
     this.sql.exec("DELETE FROM results WHERE uid=?", uid);
     this.sql.exec("DELETE FROM deliveries WHERE uid=?", uid);
+    this.sql.exec("DELETE FROM review WHERE uid=?", uid);
     this.sql.exec("DELETE FROM users WHERE uid=?", uid);
     return { quizzes: own.length, posts: own.map((q) => q.chanMsg).filter(Boolean) };
   }
@@ -350,6 +358,9 @@ export class Store extends DurableObject {
   }
   setPublic(id, v) {
     this.sql.exec("UPDATE quizzes SET public=? WHERE id=?", v ? 1 : 0, id);
+  }
+  setChanReq(id, who) {
+    this.sql.exec("UPDATE quizzes SET chanReq=? WHERE id=?", who, id);
   }
   setChanMsg(id, msg) {
     this.sql.exec("UPDATE quizzes SET chanMsg=? WHERE id=?", msg, id);
@@ -404,12 +415,48 @@ export class Store extends DurableObject {
   markBlocked(uid) {
     this.sql.exec("UPDATE users SET blocked=1 WHERE uid=?", uid);
   }
-  // Zaxira nusxa: barcha jadvallar (JSON)
-  exportAll() {
-    const tables = this.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'").toArray().map((r) => r.name);
-    const out = { bot: "LingoUP", version: 1, created: new Date().toISOString(), tables: {} };
-    for (const t of tables) out.tables[t] = this.sql.exec(`SELECT * FROM "${t}"`).toArray();
-    return JSON.stringify(out);
+  // ---- Takrorlash: har bir o'quvchining o'z xatolaridan yig'ilgan bitta umumiy ro'yxati ----
+  // wrong: xato qilingan savollar, right: to'g'ri topilgan juftliklar; isReview — takrorlash sessiyasimi
+  reviewUpdate(uid, wrong, right, isReview, srcTitle = "") {
+    const now = Date.now();
+    const key = (p) => (p[0] + "|" + p[1]).slice(0, 300);
+    let added = 0, mastered = 0, advanced = 0;
+    const wrongKeys = new Set();
+    for (const q of wrong) {
+      const k = key(q.pair);
+      if (wrongKeys.has(k)) continue;
+      wrongKeys.add(k);
+      const had = this.sql.exec("SELECT 1 FROM review WHERE uid=? AND k=?", uid, k).toArray().length;
+      if (!had) added++;
+      this.sql.exec("DELETE FROM review WHERE uid=? AND k=?", uid, k);
+      this.sql.exec("INSERT INTO review VALUES(?,?,?,?,?,?,?)", uid, "*", k, srcTitle, JSON.stringify(q), 0, now + REVIEW_STEPS[0] * DAY);
+    }
+    if (isReview) {
+      for (const p of right) {
+        const k = key(p);
+        if (wrongKeys.has(k)) continue;
+        const r = this.sql.exec("SELECT MAX(stage) AS stage FROM review WHERE uid=? AND k=?", uid, k).toArray()[0];
+        if (r?.stage == null) continue;
+        const st = r.stage + 1;
+        if (st >= REVIEW_STEPS.length) { this.sql.exec("DELETE FROM review WHERE uid=? AND k=?", uid, k); mastered++; }
+        else { this.sql.exec("UPDATE review SET stage=?, due=? WHERE uid=? AND k=?", st, now + REVIEW_STEPS[st] * DAY, uid, k); advanced++; }
+        wrongKeys.add(k);
+      }
+    }
+    const left = this.sql.exec("SELECT COUNT(DISTINCT k) AS n FROM review WHERE uid=?", uid).toArray()[0].n;
+    return { added, mastered, advanced, left };
+  }
+  reviewSummary(uid) {
+    const r = this.sql.exec(`SELECT COUNT(DISTINCT k) AS total, COUNT(DISTINCT CASE WHEN due<=? THEN k END) AS due, MIN(CASE WHEN due>? THEN due END) AS next
+      FROM review WHERE uid=?`, Date.now(), Date.now(), uid).toArray()[0];
+    return { total: r?.total || 0, due: r?.due || 0, next: r?.next || null };
+  }
+  reviewItems(uid, onlyDue, limit = REVIEW_MAX) {
+    const rows = this.sql.exec(`SELECT k, q FROM review WHERE uid=?${onlyDue ? " AND due<=?" : ""} ORDER BY due`,
+      ...(onlyDue ? [uid, Date.now()] : [uid])).toArray();
+    const seen = new Set(), out = [];
+    for (const r of rows) { if (seen.has(r.k)) continue; seen.add(r.k); out.push(JSON.parse(r.q)); if (out.length >= limit) break; }
+    return out;
   }
   userInfo(uid) {
     const u = this.sql.exec("SELECT created, blocked FROM users WHERE uid=?", uid).toArray()[0] || null;
@@ -500,7 +547,7 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   if (exps) text += `\n💬 ${exps === n ? "Har bir savolda izoh bor" : `${exps} ta savolda izoh bor`}`;
   if (takers != null) text += `\n👥 ${takers} kishi yechgan`;
   if (author) text += quiz.public ? "\n🌐 Hammaga ko'rinadi («Muallif testlari» va kanalda)" : "\n🔒 Faqat sizga ko'rinadi";
-  else if (owner) text += quiz.chanMsg ? "\n📢 Testlar kanalida joylangan" : "\n🔒 Kanalga joylanmagan";
+  else if (owner) text += quiz.chanMsg ? "\n📢 Testlar kanalida joylangan" : quiz.chanReq ? "\n⏳ Kanalga chiqarish uchun muallif tasdig'i kutilmoqda" : "\n🔒 Kanalga joylanmagan";
   text += `\n\n🔗 https://t.me/${me}?start=${quiz.id}`;
   const rows = [
     [btn("▶️ Testni boshlash", `run:${quiz.id}`)],
@@ -509,7 +556,7 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
-  else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
+  else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : quiz.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
 }
 
@@ -747,10 +794,10 @@ export class Chat extends DurableObject {
     }
     const isNew = missed.length > 0;
     // Muallifga maxsus buyruqlar menyusi (faqat unga ko'rinadi)
-    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds4"))) {
+    if (isPrivate && this.isAuthor((m || cq).from) && !(await this.st.get("adminCmds6"))) {
       await this.tgx("setMyCommands", { commands: ADMIN_COMMANDS, scope: { type: "chat", chat_id: uid } });
       await this.store().setSetting("authorId", String(uid));
-      await this.st.put("adminCmds4", 1);
+      await this.st.put("adminCmds6", 1);
     }
     if (isPrivate && uid && cq?.data !== "chk" && !(await this.isMember(uid))) {
       const arg = m?.text?.match(/^\/start\s+(\S+)/)?.[1];
@@ -880,24 +927,9 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
-        case "backup": {
-          if (!isPrivate || !this.isAuthor(m.from)) return;
-          await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
-          const json = await this.store().exportAll();
-          const data = JSON.parse(json);
-          const gz = await new Response(new Blob([json]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
-          const d = new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
-          const fd = new FormData();
-          fd.append("chat_id", String(this.chatId));
-          fd.append("caption", `💾 LingoUP zaxira nusxasi — ${fmtDate(Date.now())}\n\n` +
-            Object.entries(data.tables).map(([t, rows]) => `${t}: ${rows.length}`).join("\n") +
-            "\n\nBu faylni xavfsiz joyda saqlang. Kerak bo'lsa, ma'lumotlarni shu fayldan tiklash mumkin.");
-          fd.append("document", new Blob([gz], { type: "application/gzip" }), `LingoUP_backup_${d}.json.gz`);
-          const r = await fetch(`https://api.telegram.org/bot${this.env.BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
-          const j = await r.json().catch(() => ({ ok: false, description: "javob o'qilmadi" }));
-          if (!j.ok) return this.send(`❗ Zaxira faylni yuborib bo'lmadi: <code>${esc(j.description || "")}</code>`);
-          return;
-        }
+        case "takrorlash":
+        case "review":
+          return isPrivate ? this.reviewMenu(m.from.id) : null;
         case "myid":
         case "id":
           return this.send(`🆔 Sizning ID raqamingiz: <code>${m.from.id}</code>`);
@@ -1028,6 +1060,7 @@ export class Chat extends DurableObject {
     if (text === BTN_SET) return this.settingsMenu();
     if (text === BTN_AUTHOR) return this.sendAuthor();
     if (text === BTN_GUIDE) return this.guideMenu();
+    if (text === BTN_REVIEW) return this.reviewMenu(m.from.id);
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
     if (!text) return;
 
@@ -1321,7 +1354,7 @@ export class Chat extends DurableObject {
     const c = await cardContent(this.env, quiz, { owner: true, takers: 0, author });
     await this.edit(msgId, "👍 Test yaratildi! Endi uni yechishingiz, guruhda o'tkazishingiz yoki ulashishingiz mumkin." +
       (author ? "\n🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing."
-        : this.env.TESTS_CHANNEL ? "\n📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing." : ""));
+        : this.env.TESTS_CHANNEL ? "\n📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing — muallif tasdiqlagach kanalda chiqadi." : ""));
     return this.send(c.text, { reply_markup: c.reply_markup });
   }
 
@@ -1362,7 +1395,7 @@ export class Chat extends DurableObject {
       (made.length > 30 ? `\n… va yana ${made.length - 30} ta (hammasi 📚 Testlarim'da)` : "") +
       (pending ? `\n\n⏳ ${pending} ta qism tekshiruvga yuborildi (muallif ko'rib chiqadi).` : "") +
       (author ? "\n\n🔒 Hozircha faqat sizga ko'rinadi. Har bir testni ochib «🌐 Hammaga ko'rsatish» ni bosishingiz mumkin."
-        : this.env.TESTS_CHANNEL ? "\n\n📢 Kanalga joylash uchun testni ochib «📢 Kanalga joylash» ni bosing." : "") +
+        : this.env.TESTS_CHANNEL ? "\n\n📢 Kanalga joylash uchun testni ochib «📢 Kanalga joylash» ni bosing — muallif tasdiqlagach kanalda chiqadi." : "") +
       "\n\nTestni ochish uchun bosing 👇";
     const rows = made.filter((m) => !m.bad).map((m) => [btn(`🎲 ${m.title} · ${m.n}`.slice(0, 60), `open:${m.id}`)]);
     return this.edit(msgId, text, { reply_markup: kb(rows) });
@@ -1421,6 +1454,28 @@ export class Chat extends DurableObject {
     const text = `📚 <b>Sizning testlaringiz</b> (${total} ta)` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
       "\n\nTestni ochish uchun nomini bosing, o'chirish uchun yonidagi 🗑 ni bosing.";
     return editId ? this.edit(editId, text, { reply_markup: kb(kbRows) }) : this.send(text, { reply_markup: kb(kbRows) });
+  }
+
+  // Takrorlash: o'quvchining barcha testlardagi xatolaridan bitta umumiy test
+  async reviewMenu(uid, editId) {
+    const r = await this.store().reviewSummary(uid);
+    let text, rows = [];
+    if (!r.total) {
+      text = "🧠 <b>Takrorlash</b>\n\nHozircha ro'yxatingiz bo'sh.\nQaysi testni yechmang, xato qilgan so'zlaringiz shu yerga — bitta umumiy ro'yxatga tushadi. Bot ularni 1, 3 va 7 kundan keyin qayta so'raydi. 3 marta to'g'ri topilgan so'z «✅ o'zlashtirildi» bo'lib ro'yxatdan chiqadi.";
+    } else {
+      text = `🧠 <b>Takrorlash</b>\n\n📋 Ro'yxatingizda: <b>${r.total}</b> ta so'z\n` +
+        (r.due ? `📅 Bugun takrorlash kerak: <b>${r.due}</b> ta so'z` : `✅ Bugun uchun takrorlash yo'q.${r.next ? `\n⏭ Keyingi takrorlash: ${fmtDate(r.next)}` : ""}`) +
+        (r.due > REVIEW_MAX ? `\n<i>Bir martada ${REVIEW_MAX} tadan so'raladi.</i>` : "");
+      if (r.due) rows.push([btn(`▶️ Takrorlashni boshlash (${Math.min(r.due, REVIEW_MAX)})`, "rv:due")]);
+      else rows.push([btn(`🔁 Hozir mashq qilish (${Math.min(r.total, REVIEW_MAX)})`, "rva:all")]);
+    }
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async startReview(uid, all, msgId) {
+    const items = await this.store().reviewItems(uid, !all);
+    if (!items.length) return this.reviewMenu(uid, msgId);
+    return this.prepareSession({ id: "review", title: "Umumiy takrorlash", description: "", timer: 30, shuffle: "all", questions: items },
+      uid, "private", { record: false, review: !all });
   }
 
   async showCard(quiz, uid, editId) {
@@ -1660,12 +1715,42 @@ export class Chat extends DurableObject {
         await this.tgx("deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
         await store.setChanMsg(quiz.id, null);
         await answer("🔕 Kanaldan olib tashlandi");
+      } else if (quiz.chanReq) {
+        await store.setChanReq(quiz.id, null);
+        await answer("↩️ So'rov bekor qilindi");
       } else {
-        await this.postToChannel(quiz, cq.from);
-        const q2 = await store.getQuiz(quiz.id);
-        await answer(q2?.chanMsg ? "📢 Kanalga joylandi" : "❗ Kanalga joylab bo'lmadi, keyinroq urinib ko'ring", !q2?.chanMsg);
+        const name = [cq.from.first_name, cq.from.last_name].filter(Boolean).join(" ") || "obunachi";
+        await store.setChanReq(quiz.id, name);
+        const admin = await this.adminChat();
+        if (admin) {
+          const n = quiz.questions?.length || quiz.count;
+          const sample = (quiz.questions || []).slice(0, 5).map((q, i) => `${i + 1}. ${esc(q.q.slice(0, 100))} — <i>${esc(String(q.opts?.[q.correct] ?? "").slice(0, 60))}</i>`).join("\n");
+          await this.tgx("sendMessage", { chat_id: admin, parse_mode: "HTML",
+            text: `📢 <b>Kanalga chiqarish so'rovi</b>\n\n🎲 <b>${esc(quiz.title)}</b>\n` + (quiz.description ? `<i>${esc(quiz.description)}</i>\n` : "") +
+              `🖊 ${n} ta savol\n👤 Tuzuvchi: ${esc(name)}${cq.from.username ? ` (@${esc(cq.from.username)})` : ""}\n\n<b>Savollardan namuna:</b>\n${sample}`,
+            reply_markup: kb([[btn("✅ Kanalga chiqarish", `chq:ok:${quiz.id}`), btn("❌ Rad etish", `chq:no:${quiz.id}`)], [btn("👁 Testni ochish", `open:${quiz.id}`)]]) });
+        }
+        await answer("📨 So'rov muallifga yuborildi. Tasdiqlangach test kanalda chiqadi.", true);
       }
       return this.showCard(await store.getQuiz(quiz.id), uid, msgId);
+    }
+    if (kind === "chq") {
+      if (String(uid) !== String(await store.getSetting("authorId"))) return answer();
+      const [act, qid] = val.split(":");
+      const quiz = await store.getQuiz(qid);
+      if (!quiz) { await answer("Test o'chirilgan"); return this.edit(msgId, "🗑 Bu test o'chirilgan."); }
+      if (!quiz.chanReq) { await answer("So'rov bekor qilingan yoki ko'rib chiqilgan"); return this.edit(msgId, `ℹ️ «${esc(quiz.title)}» bo'yicha so'rov allaqachon yopilgan.`); }
+      const who = quiz.chanReq;
+      await store.setChanReq(quiz.id, null);
+      if (act === "ok") {
+        if (!quiz.chanMsg) await this.postToChannel(quiz, { id: quiz.owner, first_name: who });
+        await this.tgx("sendMessage", { chat_id: quiz.owner, parse_mode: "HTML", text: `✅ «${esc(quiz.title)}» testingiz tasdiqlandi va testlar kanaliga chiqarildi!` });
+        await answer("✅ Kanalga chiqarildi");
+        return this.edit(msgId, `✅ «${esc(quiz.title)}» — kanalga chiqarildi (${esc(who)}).`);
+      }
+      await this.tgx("sendMessage", { chat_id: quiz.owner, parse_mode: "HTML", text: `❌ «${esc(quiz.title)}» testingizni kanalga chiqarish so'rovi rad etildi. Test botda o'zingizda qoladi.` });
+      await answer("❌ Rad etildi");
+      return this.edit(msgId, `❌ «${esc(quiz.title)}» — rad etildi (${esc(who)}).`);
     }
 
     if (kind === "pub") {
@@ -1996,6 +2081,8 @@ export class Chat extends DurableObject {
       await answer();
       return this.prepareSession(quiz, uid, type);
     }
+    if (kind === "rvm") { await answer(); return this.reviewMenu(uid, msgId); }
+    if (kind === "rv" || kind === "rva") { await answer(); return this.startReview(uid, kind === "rva", msgId); }
     if (kind === "retry") {
       const r = await this.st.get("retry");
       await this.st.delete("retry");
@@ -2020,7 +2107,7 @@ export class Chat extends DurableObject {
   }
 
   // ---------- Test sessiyasi ----------
-  async prepareSession(quiz, userId, chatType, { record = true } = {}) {
+  async prepareSession(quiz, userId, chatType, { record = true, review = false } = {}) {
     const old = await this.st.get("sess");
     if (old) {
       // Tayyorgarlik bosqichida qolib ketgan eski sessiyani almashtiramiz
@@ -2032,7 +2119,7 @@ export class Chat extends DurableObject {
     if (!questions.length) return this.send("❗ Savol tuzib bo'lmadi.");
     const timer = quiz.timer || (isGroup ? 30 : 0);
     const sess = { qid: quiz.id, title: quiz.title, questions, idx: -1, timer, isGroup, starter: userId,
-      scores: {}, wrong: [], asked: 0, cur: null, stopped: false, phase: "ready", miss: 0, ready: [], record,
+      scores: {}, wrong: [], right: [], asked: 0, cur: null, stopped: false, phase: "ready", miss: 0, ready: [], record, review,
       quizTimer: quiz.timer, created: Date.now() };
     let text = `🎲 <b>${esc(quiz.title)}</b> testiga tayyorlaning\n`;
     if (quiz.description) text += `<i>${esc(quiz.description)}</i>\n`;
@@ -2160,6 +2247,7 @@ export class Chat extends DurableObject {
     sc[ok ? "ok" : "bad"]++;
     sc.t += (Date.now() - sess.cur.sent) / 1000;
     if (!sess.isGroup && !ok) sess.wrong.push(q.pair);
+    if (!sess.isGroup && ok) (sess.right ??= []).push(q.pair);
     await this.st.put("sess", sess);
     if (!sess.isGroup) await this.st.setAlarm(Date.now() + 1000);
   }
@@ -2221,8 +2309,19 @@ export class Chat extends DurableObject {
         text += "\n\n<b>Eng yaxshi 5 natija:</b>\n" + top.map((r, k) => `${medals[k]} ${esc(r.name)} — ${r.ok}/${r.total} (${fmtTime(r.secs)})`).join("\n");
       }
     }
-    const rows = [[btn("🔁 Qayta urinish", `run:${s.qid}`)]];
-    if (s.wrong.length) {
+    // Takrorlash ro'yxatini yangilash (shu test bo'yicha, shu o'quvchi uchun)
+    if (s.asked) {
+      const wrongQs0 = s.questions.filter((q) => s.wrong.some((w) => w[0] === q.pair[0] && w[1] === q.pair[1]));
+      const rv = await store.reviewUpdate(+uid, wrongQs0, s.right || [], !!s.review, s.title.replace(/ — (xatolar|takrorlash)$/, ""));
+      if (s.review) {
+        text += `\n\n🧠 <b>Takrorlash natijasi:</b>` + (rv.mastered ? `\n✅ O'zlashtirildi: ${rv.mastered} ta so'z` : "") +
+          (rv.advanced ? `\n📈 Keyingi bosqichga o'tdi: ${rv.advanced} ta` : "") +
+          (s.wrong.length ? `\n🔁 Xato — ertaga yana so'raladi: ${s.wrong.length} ta` : "") +
+          `\n📋 Takrorlash ro'yxatingizda qoldi: ${rv.left} ta`;
+      } else if (rv.added) text += `\n\n🧠 ${rv.added} ta so'z umumiy takrorlash ro'yxatingizga qo'shildi (jami ${rv.left} ta). Ertaga takrorlang: /takrorlash`;
+    }
+    const rows = [[btn(s.review ? "🧠 Takrorlash ro'yxati" : "🔁 Qayta urinish", s.review ? "rvm" : `run:${s.qid}`)]];
+    if (s.wrong.length && !s.review) {
       const wrongQs = s.questions.filter((q) => s.wrong.some((w) => w[0] === q.pair[0] && w[1] === q.pair[1]));
       await this.st.put("retry", { qid: s.qid, title: s.title.replace(/ — xatolar$/, ""), timer: s.quizTimer, questions: wrongQs });
       text += "\n\n📝 <b>Takrorlash kerak:</b>\n" + s.wrong.slice(0, 30).map(([a, b]) => `• ${esc(a)} — ${esc(b)}`).join("\n");
