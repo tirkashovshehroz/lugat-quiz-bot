@@ -888,7 +888,7 @@ export class Chat extends DurableObject {
     for (const ad of list || (await store.activeAds())) {
       const r = await copyAd(this.env, this.chatId, ad);
       if (!r.ok) continue;
-      if (ad.pin && r.msgs[0]) await this.tgx("pinChatMessage", { chat_id: this.chatId, message_id: r.msgs[0], disable_notification: true });
+      if (ad.pin && r.msgs[0]) await pinAd(this.env, this.chatId, r.msgs);
       await store.addDeliveries(ad.id, [[uid, r.msgs]]);
     }
   }
@@ -2577,6 +2577,11 @@ async function onInline(iq, env) {
 }
 
 // Reklamani bitta chatga nusxalash (bitta post yoki albom). Yuborilgan xabarlar id larini qaytaradi.
+// Reklamani qadash va "… pinned …" xizmat xabarini darhol o'chirish (keyin "pinned Deleted message" qolmasin)
+async function pinAd(env, chatId, msgs) {
+  const r = await tg(env, "pinChatMessage", { chat_id: chatId, message_id: msgs[0], disable_notification: true });
+  if (r.ok) await tg(env, "deleteMessage", { chat_id: chatId, message_id: msgs[msgs.length - 1] + 1 });
+}
 async function copyAd(env, chatId, ad) {
   const ids = ad.msgIds || [ad.msgId];
   if (ids.length === 1) {
@@ -2708,7 +2713,7 @@ export class Caster extends DurableObject {
         if (already.has(uid)) { job.ok++; job.after = uid; continue; }
         const r = await copyAd(this.env, uid, ad);
         if (r.ok) {
-          if (ad.pin && r.msgs[0]) await tg(this.env, "pinChatMessage", { chat_id: uid, message_id: r.msgs[0], disable_notification: true });
+          if (ad.pin && r.msgs[0]) await pinAd(this.env, uid, r.msgs);
           rows.push([uid, r.msgs]);
           job.ok++;
         } else if (r.error_code === 429) {
@@ -2743,7 +2748,8 @@ export class Caster extends DurableObject {
       }
       for (const { uid, msgs } of rows) {
         if (ad.pin && msgs[0]) await tg(this.env, "unpinChatMessage", { chat_id: uid, message_id: msgs[0] });
-        const r = await tg(this.env, "deleteMessages", { chat_id: uid, message_ids: msgs });
+        // Qadalgan reklamaning xizmat xabari ham (oldingi versiyada qolib ketganlari uchun) o'chiriladi
+        const r = await tg(this.env, "deleteMessages", { chat_id: uid, message_ids: ad.pin && msgs.length ? [...msgs, msgs[msgs.length - 1] + 1] : msgs });
         if (r.error_code === 429) { await this.st.put("queue", q); return this.st.setAlarm(Date.now() + ((r.parameters?.retry_after || 5) + 1) * 1000); }
         job.ok++;
         job.after = uid;
