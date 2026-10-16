@@ -96,6 +96,9 @@ const EXACT = {
   "📎 PDF birlashtirish": ["📎 Объединить PDF", "📎 Merge PDFs", "📎 PDF birleştir"],
   "📊 Excel → CSV": ["📊 Excel → CSV", "📊 Excel → CSV", "📊 Excel → CSV"],
   "📄 PDF → TXT": ["📄 PDF → TXT", "📄 PDF → TXT", "📄 PDF → TXT"],
+  "📢 Kanalga chiqarish": ["📢 Опубликовать в канале", "📢 Post to channel", "📢 Kanalda yayınla"],
+  "🔒 Kanaldan yashirish": ["🔒 Скрыть из канала", "🔒 Hide from channel", "🔒 Kanaldan gizle"],
+  "🗑 O'chirish": ["🗑 Удалить", "🗑 Delete", "🗑 Sil"],
   "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
   "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
@@ -308,6 +311,10 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/Testni ochish uchun nomini bosing\. Ostidagi tugmalar: 📢 kanalga chiqarish \/ yashirish, 🗑 o'chirish\./g, "Нажмите на название, чтобы открыть тест. Кнопки ниже: 📢 публикация в канале / скрытие, 🗑 удаление.", "Tap a title to open the quiz. Buttons below: 📢 post to / hide from channel, 🗑 delete.", "Testi açmak için adına dokunun. Alttaki düğmeler: 📢 kanalda yayınla / gizle, 🗑 sil."],
+  [/📢 — kanalda \(hammaga ochiq\)/g, "📢 — в канале (открыт всем)", "📢 — in the channel (public)", "📢 — kanalda (herkese açık)"],
+  [/📢 — kanalda · 🕓 — muallif tasdig'ini kutmoqda/g, "📢 — в канале · 🕓 — ждёт одобрения автора", "📢 — in the channel · 🕓 — awaiting author approval", "📢 — kanalda · 🕓 — yazar onayı bekleniyor"],
+  [/ · 🎲 — faqat sizda/g, " · 🎲 — только у вас", " · 🎲 — only you", " · 🎲 — sadece sizde"],
   [/🧰 <b>Fayl vositalari<\/b>\n\nNimani qilamiz\?/g, "🧰 <b>Файловые инструменты</b>\n\nЧто делаем?", "🧰 <b>File tools</b>\n\nWhat shall we do?", "🧰 <b>Dosya araçları</b>\n\nNe yapalım?"],
   [/— bir nechta JPG\/PNG bitta PDF bo'ladi/g, "— несколько JPG/PNG в один PDF", "— several JPG/PNG into one PDF", "— birden çok JPG/PNG tek PDF olur"],
   [/— bir nechta PDF bitta faylga/g, "— несколько PDF в один файл", "— several PDFs into one file", "— birden çok PDF tek dosyada"],

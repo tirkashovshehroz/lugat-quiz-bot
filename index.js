@@ -311,7 +311,7 @@ export class Store extends DurableObject {
     return true;
   }
   listQuizzes(owner, offset = 0, n = 30) {
-    return this.sql.exec("SELECT id,title,count FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
+    return this.sql.exec("SELECT id,title,count,public,chanMsg,chanReq,status FROM quizzes WHERE owner=? ORDER BY created DESC LIMIT ? OFFSET ?", owner, n, offset).toArray();
   }
   countQuizzes(owner) {
     return this.sql.exec("SELECT COUNT(*) AS n FROM quizzes WHERE owner=?", owner).toArray()[0]?.n || 0;
@@ -1777,14 +1777,25 @@ export class Chat extends DurableObject {
     const pages = Math.ceil(total / PER);
     page = Math.min(Math.max(0, page), pages - 1);
     const rows = await store.listQuizzes(owner, page * PER, PER);
-    const kbRows = rows.map((r) => [btn(`🎲 ${r.title} · ${r.count} savol`.slice(0, 56), `open:${r.id}`), btn("🗑", `mdel:${r.id}:${page}`)]);
+    const author = this.isAuthor(this.from);
+    const kbRows = [];
+    for (const r of rows) {
+      const live = author ? r.public : r.chanMsg;
+      const mark = r.status === "pending" ? "⏳" : live ? "📢" : r.chanReq ? "🕓" : "🎲";
+      kbRows.push([btn(`${mark} ${r.title} · ${r.count} savol`.slice(0, 64), `open:${r.id}`)]);
+      const act = r.status === "pending" ? null
+        : author ? btn(r.public ? "🔒 Kanaldan yashirish" : "📢 Kanalga chiqarish", `pub:${r.id}:${page}`)
+        : btn(r.chanMsg ? "🔕 Kanaldan olib tashlash" : r.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga chiqarish", `chan:${r.id}:${page}`);
+      kbRows.push(act ? [act, btn("🗑 O'chirish", `mdel:${r.id}:${page}`)] : [btn("🗑 O'chirish", `mdel:${r.id}:${page}`)]);
+    }
     const nav = [];
     if (page > 0) nav.push(btn("⬅️ Oldingi", `mypg:${page - 1}`));
     if (page < pages - 1) nav.push(btn("Keyingi ➡️", `mypg:${page + 1}`));
     if (nav.length) kbRows.push(nav);
     kbRows.push([btn(`🗑 Hammasini o'chirish (${total})`, "mdall")]);
     const text = `📚 <b>Sizning testlaringiz</b> (${total} ta)` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
-      "\n\nTestni ochish uchun nomini bosing, o'chirish uchun yonidagi 🗑 ni bosing.";
+      "\n\nTestni ochish uchun nomini bosing. Ostidagi tugmalar: 📢 kanalga chiqarish / yashirish, 🗑 o'chirish." +
+      `\n<i>📢 — kanalda${this.isAuthor(this.from) ? " (hammaga ochiq)" : ""}${this.isAuthor(this.from) ? "" : " · 🕓 — muallif tasdig'ini kutmoqda"} · 🎲 — faqat sizda</i>`;
     return editId ? this.edit(editId, text, { reply_markup: kb(kbRows) }) : this.send(text, { reply_markup: kb(kbRows) });
   }
 
@@ -2088,7 +2099,8 @@ export class Chat extends DurableObject {
     }
 
     if (kind === "chan") {
-      const quiz = await store.getQuiz(val);
+      const [cqid, cpg] = val.split(":");
+      const quiz = await store.getQuiz(cqid);
       if (!quiz || quiz.owner !== uid) return answer("Faqat test egasi uchun", true);
       if (quiz.status === "pending") return answer("⏳ Test tekshiruvda", true);
       if (!this.env.TESTS_CHANNEL) return answer("Kanal sozlanmagan", true);
@@ -2113,6 +2125,7 @@ export class Chat extends DurableObject {
         }
         await answer("📨 So'rov muallifga yuborildi. Tasdiqlangach test kanalda chiqadi.", true);
       }
+      if (cpg !== undefined) return this.myTests(uid, +cpg || 0, msgId);
       return this.showCard(await store.getQuiz(quiz.id), uid, msgId);
     }
     if (kind === "chq") {
@@ -2135,7 +2148,8 @@ export class Chat extends DurableObject {
     }
 
     if (kind === "pub") {
-      const quiz = await store.getQuiz(val);
+      const [pqid, ppg] = val.split(":");
+      const quiz = await store.getQuiz(pqid);
       if (!quiz || quiz.owner !== uid || !this.isAuthor(cq.from)) return answer("Faqat muallif uchun", true);
       const on = !quiz.public;
       await store.setPublic(quiz.id, on);
@@ -2147,6 +2161,7 @@ export class Chat extends DurableObject {
         await store.setChanMsg(quiz.id, null);
         await answer("🔒 Obunachilardan yashirildi");
       }
+      if (ppg !== undefined) return this.myTests(uid, +ppg || 0, msgId);
       return this.showCard(await store.getQuiz(quiz.id), uid, msgId);
     }
 
