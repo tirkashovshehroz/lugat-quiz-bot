@@ -127,6 +127,15 @@ const shuffle = (a) => {
   return a;
 };
 const sample = (a, n) => shuffle([...a]).slice(0, n);
+// n tani har biri `size` tadan qismlarga bo'lish; oxirgi qism 5 tadan kam bo'lsa, oldingisiga qo'shiladi
+const MAX_PARTS = 20;
+function splitSizes(n, size) {
+  size = Math.max(1, Math.min(size, n));
+  const out = [];
+  for (let left = n; left > 0; left -= size) out.push(Math.min(size, left));
+  if (out.length > 1 && out[out.length - 1] < 5) out[out.length - 2] += out.pop();
+  return out;
+}
 const timerLabel = (t) => (!t ? "cheklanmagan" : t < 60 ? `${t} soniya` : `${t / 60} daqiqa`);
 const timerShort = (t) => (t < 60 ? `${t} son` : `${t / 60} daq`);
 function fmtTime(sec) {
@@ -198,12 +207,12 @@ function uniqWords(pairs) {
 }
 
 // Lug'atdan savollar tuzish (test yaratilganda bir marta)
-export function buildQuestions(pairs, count, direction) {
-  const chosen = sample(pairs, Math.min(count, pairs.length, MAX_QUESTIONS));
+export function buildQuestions(pairs, count, direction, allPairs = pairs, keepOrder = false) {
+  const chosen = keepOrder ? pairs.slice(0, Math.min(count, MAX_QUESTIONS)) : sample(pairs, Math.min(count, pairs.length, MAX_QUESTIONS));
   const out = [];
   for (const [word, tr] of chosen) {
     const d = direction === "mix" ? (Math.random() < 0.5 ? "fwd" : "rev") : direction;
-    const [q, ans, pool] = d === "fwd" ? [word, tr, pairs.map((p) => p[1])] : [tr, word, pairs.map((p) => p[0])];
+    const [q, ans, pool] = d === "fwd" ? [word, tr, allPairs.map((p) => p[1])] : [tr, word, allPairs.map((p) => p[0])];
     const a = ans.slice(0, 100);
     const others = [...new Set(pool.map((p) => p.slice(0, 100)))].filter((p) => p.toLowerCase() !== a.toLowerCase());
     if (!others.length) continue;
@@ -873,9 +882,18 @@ export class Chat extends DurableObject {
           if (!target) {
             const st = await store.userStats();
             const rows = await store.adDeliveryCounts();
+            const cs = this.env.CASTER.get(this.env.CASTER.idFromName("main"));
+            const det = await cs.details();
+            const jobs = det.jobs.length ? det.jobs.map((j, i) => `${i + 1}. ${j.type === "send" ? "📤 tarqatish" : "🗑 olib tashlash"} #${j.ad}: ✅ ${j.ok} / ❌ ${j.fail} (🚫 ${j.blocked}), ${j.age} daq oldin boshlangan` +
+              (j.errors ? `, ⚠️ ${j.errors} marta xato` : "") + (j.lastError ? `\n   Telegram: <code>${esc(j.lastError)}</code>` : "")).join("\n") : "bo'sh";
+            const navbat = `\n\n⚙️ <b>Navbat:</b> ${jobs}` + (det.alarm ? `\n⏰ Keyingi ishga tushish: ${fmtDate(det.alarm)}` : "\n⏰ Rejalashtirilmagan") +
+              (det.lastCrash ? `\n💥 Oxirgi ichki xato: <code>${esc(det.lastCrash)}</code>` : "");
+            const btns = rows.map((a) => [btn(`📤 «${a.title}» — yetmaganlarga yuborish`.slice(0, 60), `adre:${a.id}`)]);
+            if (det.jobs.length) btns.push([btn("🧹 Navbatni tozalash", "adq:clear")]);
             return this.send(`📊 <b>Reklama tekshiruvi</b>\n\n👥 Faol foydalanuvchilar: ${st.users}\n🚫 Bloklangan deb belgilangan: ${st.blocked}\n\n` +
               (rows.length ? rows.map((a) => `📣 «${esc(a.title)}»: yetkazilgan ${a.have} ta (hisobot: ${a.sent} ✅ / ${a.fail} ❌)`).join("\n") : "Faol reklama yo'q.") +
-              "\n\nBitta foydalanuvchini tekshirish: <code>/adcheck ID</code>\n(ID ni foydalanuvchi botga /id yozib biladi)");
+              navbat + "\n\nBitta foydalanuvchini tekshirish: <code>/adcheck ID</code>\n(ID ni foydalanuvchi botga /id yozib biladi)",
+              { reply_markup: kb(btns) });
           }
           const info = await store.userInfo(target);
           let text = `🔎 <b>Foydalanuvchi ${target}</b>\n\n` + (info.u
@@ -960,7 +978,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-14 · reklama tekshiruvi</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-16 · qismlarga bo'lish</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -992,6 +1010,14 @@ export class Chat extends DurableObject {
     if (ed) return this.onEditText(ed, text, m.from.id, m.from);
 
     const create = await this.st.get("create");
+    if (create?.step === "splitcustom") {
+      const k = parseInt(text.trim(), 10);
+      if (!/^\d+$/.test(text.trim()) || k < 2) return this.send("Raqam yozing, masalan: 40");
+      if (k >= create.pairs.length) return this.send(`Jami ${create.pairs.length} ta — undan kichik son yozing.`);
+      if (splitSizes(create.pairs.length, k).length > MAX_PARTS) return this.send(`Juda ko'p qism chiqadi (eng ko'pi ${MAX_PARTS}). Kattaroq son yozing.`);
+      create.split = { size: k };
+      return this.askSplitOrder(create);
+    }
     if (create?.step === "custom") {
       const n = parseInt(text.trim(), 10);
       if (!/^\d+$/.test(text.trim()) || n < 1) return this.send("Raqam yozing, masalan: 25");
@@ -1169,7 +1195,34 @@ export class Chat extends DurableObject {
     const opts = [10, 20, 30, 50, 100, 200, 500].filter((x) => x < n).slice(0, 7);
     const text = (extra.head || `📄 <b>${esc(title)}</b>\n📖 <b>${n}</b> ta so'z.`) + "\n\nNechta savol bo'lsin?";
     const reply_markup = kb([opts.slice(0, 4).map((x) => btn(String(x), `cnt:${x}`)), opts.slice(4).map((x) => btn(String(x), `cnt:${x}`)),
-      [btn(`Hammasi (${n})`, `cnt:${n}`), btn("✏️ Boshqa son", "cnt:custom")]]);
+      [btn(`Hammasi (${n})`, `cnt:${n}`), btn("✏️ Boshqa son", "cnt:custom")],
+      n >= 8 ? [btn("✂️ Qismlarga bo'lib, bir nechta test tuzish", "cnt:split")] : []]);
+    return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
+  }
+
+  // Lug'at/testni teng qismlarga bo'lish: har qismda nechta savol bo'lishini so'raymiz
+  async askSplit(create, editId) {
+    const n = create.pairs.length;
+    create.step = "split";
+    await this.st.put("create", create);
+    const parts = (size) => splitSizes(n, size).length;
+    const sizes = [10, 20, 25, 30, 40, 50, 100, 200].filter((x) => x < n && parts(x) > 1 && parts(x) <= MAX_PARTS).slice(0, 8);
+    const counts = [2, 3, 4, 5, 6, 8, 10].filter((k) => k <= n / 4 && k <= MAX_PARTS);
+    const rows = [];
+    for (let i = 0; i < sizes.length; i += 2) rows.push(sizes.slice(i, i + 2).map((x) => btn(`${x} tadan → ${parts(x)} qism`, `spl:s:${x}`)));
+    for (let i = 0; i < counts.length; i += 3) rows.push(counts.slice(i, i + 3).map((k) => btn(`${k} qismga`, `spl:p:${k}`)));
+    rows.push([btn("✏️ Har qismga boshqa son", "spl:custom")], [btn("⬅️ Orqaga", "spl:back")]);
+    const text = `✂️ <b>${esc(create.title)}</b> — ${n} ta ${create.mcq ? "savol" : "so'z"}.\n\n` +
+      `Qanday bo'lamiz? Har bir qism alohida test bo'ladi va har bir ${create.mcq ? "savol" : "so'z"} faqat bitta qismga tushadi.\n\n` +
+      "• <b>«… tadan»</b> — har bir qismda shuncha savol\n• <b>«… qismga»</b> — shuncha teng qismga";
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async askSplitOrder(create, editId) {
+    create.step = "splitorder";
+    await this.st.put("create", create);
+    const sz = splitSizes(create.pairs.length, create.split.size);
+    const text = `✂️ ${sz.length} ta qism: ${sz.length <= 6 ? sz.join(", ") : `${sz[0]} tadan`} ta savol.\n\nSo'zlar qismlarga qanday taqsimlansin?`;
+    const reply_markup = kb([[btn("📖 Fayldagi tartibda (1-qism — boshidagi so'zlar)", "spo:seq")], [btn("🔀 Aralashtirib", "spo:rnd")], [btn("⬅️ Orqaga", "cnt:split")]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
   }
 
@@ -1214,6 +1267,7 @@ export class Chat extends DurableObject {
       await this.st.delete("create");
       return this.edit(msgId, "❌ Test yaratilmadi.");
     }
+    if (create.split) return this.finishSplit(create, uid, msgId, from);
     let questions, pairs = create.pairs, direction = create.direction || "fwd";
     if (create.mcq) {
       // Tayyor savollar: kerakli sonini tanlab, asl tartibini saqlaymiz
@@ -1243,6 +1297,48 @@ export class Chat extends DurableObject {
       (author ? "\n🔒 Hozircha faqat sizga ko'rinadi. Obunachilarga ko'rsatish uchun «🌐 Hammaga ko'rsatish» ni bosing."
         : this.env.TESTS_CHANNEL ? "\n📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing." : ""));
     return this.send(c.text, { reply_markup: c.reply_markup });
+  }
+
+  // Bir nechta qismli testlarni bir yo'la yaratish
+  async finishSplit(create, uid, msgId, from) {
+    const store = this.store();
+    const author = this.isAuthor(from);
+    if (author) await store.setSetting("authorId", String(uid));
+    const n = create.pairs.length;
+    const order = create.split.order === "rnd" ? shuffle([...create.pairs.keys()]) : [...create.pairs.keys()];
+    const sizes = splitSizes(n, create.split.size);
+    const direction = create.mcq ? "mcq" : create.direction || "fwd";
+    const made = [];
+    let pos = 0, pending = 0;
+    for (let k = 0; k < sizes.length; k++) {
+      const idx = order.slice(pos, pos + sizes[k]);
+      pos += sizes[k];
+      let questions;
+      if (create.mcq) {
+        questions = idx.sort((a, b) => a - b).map((i) => create.pairs[i]).map((q) => ({ q: q.q, opts: q.opts.map((o) => o || "—"), correct: q.correct,
+          pair: [q.q.length > 80 ? q.q.slice(0, 77) + "…" : q.q, q.opts[q.correct]],
+          ...(q.img ? { img: q.img } : {}), ...(q.exp ? { exp: q.exp.slice(0, EXP_MAX) } : {}) }));
+      } else {
+        const part = idx.map((i) => create.pairs[i]);
+        questions = buildQuestions(part, part.length, direction, create.pairs, true);
+      }
+      const title = `${create.title} (${k + 1}-qism)`.slice(0, 100);
+      const id = await store.saveQuiz({ owner: uid, title, description: create.description || "",
+        pairs: create.mcq ? [] : idx.map((i) => create.pairs[i]), direction, timer: create.timer, shuffle: create.shuffle, questions });
+      const bad = author ? null : badWord(quizTexts({ title, description: create.description, questions }));
+      if (bad) { await store.setStatus(id, "pending"); pending++; if (pending === 1) await this.reportToAdmin(await store.getQuiz(id), "🚨 <b>Shubhali test (avtomatik filtr)</b>", `🔎 Topilgan so'z: <code>${esc(bad)}</code>\n`); }
+      made.push({ id, title, n: questions.length, bad: !!bad });
+    }
+    await this.st.delete("create");
+    const text = `👍 <b>${made.length} ta test yaratildi!</b>\n<b>${esc(create.title)}</b> — ${n} ta ${create.mcq ? "savol" : "so'z"}, ` +
+      `${create.split.order === "rnd" ? "aralashtirib" : "fayldagi tartibda"} bo'lindi.\n\n` +
+      made.map((m) => `${m.bad ? "⏳" : "🎲"} ${esc(m.title)} — ${m.n} ta savol`).join("\n") +
+      (pending ? `\n\n⏳ ${pending} ta qism tekshiruvga yuborildi (muallif ko'rib chiqadi).` : "") +
+      (author ? "\n\n🔒 Hozircha faqat sizga ko'rinadi. Har bir testni ochib «🌐 Hammaga ko'rsatish» ni bosishingiz mumkin."
+        : this.env.TESTS_CHANNEL ? "\n\n📢 Kanalga joylash uchun testni ochib «📢 Kanalga joylash» ni bosing." : "") +
+      "\n\nTestni ochish uchun bosing 👇";
+    const rows = made.filter((m) => !m.bad).map((m) => [btn(`🎲 ${m.title} · ${m.n}`.slice(0, 60), `open:${m.id}`)]);
+    return this.edit(msgId, text, { reply_markup: kb(rows) });
   }
 
   async catalog(page = 0, editId) {
@@ -1408,7 +1504,7 @@ export class Chat extends DurableObject {
     const [kind, val] = i < 0 ? [data, ""] : [data.slice(0, i), data.slice(i + 1)];
     const store = this.store();
 
-    if (kind === "ad" || kind === "admode" || kind === "adgo" || kind === "adrm" || kind === "adrmok") {
+    if (kind === "ad" || kind === "admode" || kind === "adgo" || kind === "adrm" || kind === "adrmok" || kind === "adre" || kind === "adq") {
       if (!this.isAuthor(cq.from)) return answer();
       const caster = this.env.CASTER.get(this.env.CASTER.idFromName("main"));
       if (kind === "ad" && val === "menu") { await answer(); return this.adMenu(msgId); }
@@ -1443,6 +1539,18 @@ export class Chat extends DurableObject {
         return this.edit(msgId, `✅ «${esc(d.title)}» reklamasi ${pos > 1 ? `navbatga qo'shildi (${pos}-o'rinda)` : "tarqatilmoqda"}.` +
           `\n${mode === "pin" ? "📌 Qadaladi." : "📤 Post qilib yuboriladi."} ⏳ ${days ? `${days} kun (${fmtDate(Date.now() + days * 86400e3)} gacha)` : "Muddatsiz"}` +
           "\nTugagach xabar beraman. Boshqaruv: /reklama");
+      }
+      if (kind === "adre") {
+        const ad = await store.getAd(+val);
+        if (!ad || !ad.active) return answer("Reklama faol emas", true);
+        const pos = await caster.enqueue({ type: "send", ad: ad.id, admin: this.chatId });
+        await answer("Navbatga qo'shildi");
+        return this.send(`📤 «${esc(ad.title)}» hali olmaganlarga qayta yuborilmoqda${pos > 1 ? ` (navbatda ${pos}-o'rinda)` : ""}. Olganlarga takror bormaydi. Tugagach xabar beraman.`);
+      }
+      if (kind === "adq") {
+        await caster.clearQueue();
+        await answer("🧹 Tozalandi");
+        return this.send("🧹 Reklama navbati tozalandi. Endi «📤 yetmaganlarga yuborish» ni bosing: /adcheck");
       }
       if (kind === "adrm") {
         const ad = await store.getAd(+val);
@@ -1638,7 +1746,7 @@ export class Chat extends DurableObject {
     }
 
     // Test yaratish
-    if (["sec", "cnt", "dir", "ttl", "dsc", "tm", "shf"].includes(kind)) {
+    if (["sec", "cnt", "dir", "ttl", "dsc", "tm", "shf", "spl", "spo"].includes(kind)) {
       const create = await this.st.get("create");
       if (!create) return answer("Faylni qayta yuboring", true);
       if (kind === "sec") {
@@ -1649,7 +1757,32 @@ export class Chat extends DurableObject {
         return answer();
       }
       if (!create.pairs) return answer("Faylni qayta yuboring", true);
+      if (kind === "spl") {
+        await answer();
+        const n = create.pairs.length;
+        if (val === "back") { delete create.split; return this.askCount(create.pairs, create.title, msgId, { mcq: create.mcq }); }
+        if (val === "custom") {
+          create.step = "splitcustom";
+          await this.st.put("create", create);
+          return this.edit(msgId, `✏️ Har bir qismda nechta savol bo'lsin? (2–${n - 1}) Raqam yozing:`);
+        }
+        const [t, v] = val.split(":");
+        const size = t === "p" ? Math.ceil(n / Math.max(2, +v)) : Math.max(2, +v);
+        create.split = { size };
+        return this.askSplitOrder(create, msgId);
+      }
+      if (kind === "spo") {
+        await answer();
+        if (!create.split) return this.askSplit(create, msgId);
+        create.split.order = val === "rnd" ? "rnd" : "seq";
+        create.count = create.pairs.length;
+        if (create.mcq) return this.askTitle(create, msgId);
+        create.step = "dir";
+        await this.st.put("create", create);
+        return this.askDirection(msgId);
+      }
       if (kind === "cnt") {
+        if (val === "split") { await answer(); return this.askSplit(create, msgId); }
         if (val === "custom") {
           create.step = "custom";
           await this.st.put("create", create);
@@ -2147,6 +2280,17 @@ export class Caster extends DurableObject {
     const q = (await this.st.get("queue")) || [];
     return { queue: q.length, progress: q[0] ? q[0].ok + q[0].fail : null };
   }
+  async details() {
+    const q = (await this.st.get("queue")) || [];
+    return { jobs: q.map((j) => ({ type: j.type, ad: j.ad, ok: j.ok, fail: j.fail, blocked: j.blocked || 0, after: j.after,
+      errors: j.errors || 0, lastError: j.lastError || "", age: Math.round((Date.now() - j.started) / 60000) })),
+      alarm: await this.st.getAlarm(), lastCrash: (await this.st.get("lastCrash")) || "" };
+  }
+  async clearQueue() {
+    await this.st.put("queue", []);
+    await this.st.delete("lastCrash");
+    await this.scheduleExpiry();
+  }
   // Vazifani navbatga qo'shish; navbatdagi o'rnini qaytaradi
   async enqueue(job) {
     const q = (await this.st.get("queue")) || [];
@@ -2172,6 +2316,7 @@ export class Caster extends DurableObject {
     } catch (e) {
       // Xato bo'lsa navbat qotib qolmasin: biroz kutib davom etamiz, takrorlansa — bu bo'lakni o'tkazib yuboramiz
       console.log("Reklama xatosi", e);
+      await this.st.put("lastCrash", `${fmtDate(Date.now())}: ${String(e?.message || e).slice(0, 150)}`);
       const q = (await this.st.get("queue")) || [];
       if (q[0]) {
         q[0].errors = (q[0].errors || 0) + 1;

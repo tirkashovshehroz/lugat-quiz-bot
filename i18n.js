@@ -73,6 +73,10 @@ const EXACT = {
   "⬅️ Yo'q": ["⬅️ Нет", "⬅️ No", "⬅️ Hayır"],
   "📢 Kanalga joylash": ["📢 Опубликовать в канале", "📢 Post to channel", "📢 Kanala gönder"],
   "🔕 Kanaldan olib tashlash": ["🔕 Убрать из канала", "🔕 Remove from channel", "🔕 Kanaldan kaldır"],
+  "✂️ Qismlarga bo'lib, bir nechta test tuzish": ["✂️ Разбить на части и создать несколько тестов", "✂️ Split into parts and create several quizzes", "✂️ Parçalara bölüp birkaç test oluştur"],
+  "✏️ Har qismga boshqa son": ["✏️ Своё число на часть", "✏️ Custom size per part", "✏️ Parça başına başka sayı"],
+  "📖 Fayldagi tartibda (1-qism — boshidagi so'zlar)": ["📖 По порядку файла (1-я часть — первые слова)", "📖 In file order (part 1 — first words)", "📖 Dosya sırasıyla (1. parça — ilk kelimeler)"],
+  "🔀 Aralashtirib": ["🔀 Вперемешку", "🔀 Shuffled", "🔀 Karıştırarak"],
   "🗑 Ha, hammasini o'chirish": ["🗑 Да, удалить все", "🗑 Yes, delete all", "🗑 Evet, hepsini sil"],
   "⬅️ Yo'q, orqaga": ["⬅️ Нет, назад", "⬅️ No, back", "⬅️ Hayır, geri"],
   "Yo'q": ["Нет", "No", "Hayır"],
@@ -285,6 +289,15 @@ const LIT = [
 
 // ---- Shablonlar (o'zgaruvchili joylar) ----
 const RX = [
+  [/(\d+) tadan → (\d+) qism/g, "по $1 → $2 частей", "$1 each → $2 parts", "$1'er → $2 parça"],
+  [/^(\d+) qismga$/g, "на $1 частей", "into $1 parts", "$1 parçaya"],
+  [/✂️ (\d+) ta qism: (.*?) ta savol\./g, "✂️ Частей: $1 — по $2 вопр.", "✂️ $1 parts: $2 questions.", "✂️ $1 parça: $2 soru."],
+  [/So'zlar qismlarga qanday taqsimlansin\?/g, "Как распределить слова по частям?", "How should the words be distributed?", "Kelimeler parçalara nasıl dağıtılsın?"],
+  [/Qanday bo'lamiz\? Har bir qism alohida test bo'ladi va har bir (so'z|savol) faqat bitta qismga tushadi\./g, "Как разбить? Каждая часть станет отдельным тестом, и каждый элемент попадёт только в одну часть.", "How to split? Each part becomes a separate quiz, and each item goes into exactly one part.", "Nasıl bölelim? Her parça ayrı bir test olur ve her öğe yalnızca bir parçaya girer."],
+  [/• <b>«… tadan»<\/b> — har bir qismda shuncha savol\n• <b>«… qismga»<\/b> — shuncha teng qismga/g, "• <b>«по …»</b> — столько вопросов в каждой части\n• <b>«на … частей»</b> — столько равных частей", "• <b>«… each»</b> — that many questions per part\n• <b>«into … parts»</b> — that many equal parts", "• <b>«…'er»</b> — her parçada o kadar soru\n• <b>«… parçaya»</b> — o kadar eşit parça"],
+  [/👍 <b>(\d+) ta test yaratildi!<\/b>/g, "👍 <b>Создано тестов: $1!</b>", "👍 <b>$1 quizzes created!</b>", "👍 <b>$1 test oluşturuldu!</b>"],
+  [/ \((\d+)-qism\)/g, " (часть $1)", " (part $1)", " ($1. parça)"],
+  [/Testni ochish uchun bosing 👇/g, "Нажмите, чтобы открыть тест 👇", "Tap to open a quiz 👇", "Testi açmak için dokunun 👇"],
   [/📢 Testlar kanalida joylangan/g, "📢 Опубликован в канале тестов", "📢 Posted in the tests channel", "📢 Test kanalında yayınlandı"],
   [/🔒 Kanalga joylanmagan/g, "🔒 Не опубликован в канале", "🔒 Not posted to the channel", "🔒 Kanalda yayınlanmadı"],
   [/📢 Testni kanalimizga joylashni xohlasangiz, «📢 Kanalga joylash» tugmasini bosing\./g, "📢 Чтобы опубликовать тест в нашем канале, нажмите «📢 Опубликовать в канале».", "📢 To post the quiz to our channel, press «📢 Post to channel».", "📢 Testi kanalımızda yayınlamak için «📢 Kanala gönder»e basın."],
