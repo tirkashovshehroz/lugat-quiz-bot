@@ -325,6 +325,35 @@ function analyze(lines, images = []) {
 
 const IMG_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp" };
 
+// Excel (.xlsx) varaqlarini ustun-qator ko'rinishida o'qish (CSV uchun)
+export async function xlsxSheets(bytes) {
+  const f = await unzip(bytes, (n) => n === "xl/sharedStrings.xml" || n === "xl/workbook.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
+  const shared = [];
+  const ss = txt(f["xl/sharedStrings.xml"]);
+  if (ss) for (const si of ss.matchAll(/<si>([\s\S]*?)<\/si>/g))
+    shared.push(unxml([...si[1].matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/g)].map((m) => m[1]).join("")));
+  const names = [...txt(f["xl/workbook.xml"]).matchAll(/<sheet\b[^>]*\bname="([^"]*)"/g)].map((m) => unxml(m[1]));
+  const files = Object.keys(f).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))
+    .sort((a, b) => +a.match(/(\d+)\.xml$/)[1] - +b.match(/(\d+)\.xml$/)[1]);
+  return files.map((name, k) => {
+    const rows = [];
+    for (const r of txt(f[name]).matchAll(/<row[\s>][\s\S]*?<\/row>/g)) {
+      const row = [];
+      for (const c of r[0].matchAll(/<c\s([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+        const ref = (c[1].match(/\br="([A-Z]+)\d*"/) || [, "A"])[1];
+        const t = (c[1].match(/\bt="(\w+)"/) || [])[1];
+        const inner = c[2] || "";
+        let v = "";
+        if (t === "inlineStr") v = unxml([...inner.matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/g)].map((m) => m[1]).join(""));
+        else { const vm = inner.match(/<v>([^<]*)<\/v>/); if (vm) v = t === "s" ? shared[+vm[1]] ?? "" : unxml(vm[1]); }
+        row[colIndex(ref)] = v;
+      }
+      rows.push(Array.from(row, (x) => x ?? ""));
+    }
+    return { name: names[k] || `Sheet${k + 1}`, rows };
+  });
+}
+
 export async function parseFile(filename, bytes) {
   const name = filename.toLowerCase();
   if (name.endsWith(".docx")) {

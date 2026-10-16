@@ -1,7 +1,8 @@
 // LingoUP bot — Cloudflare Workers versiyasi (bepul tarifda ishlaydi)
 // QuizBot kabi ishlaydi, lekin savollar fayldan avtomatik tuziladi.
 import { DurableObject } from "cloudflare:workers";
-import { parseFile, parseText } from "./parse.js";
+import { parseFile, parseText, xlsxSheets } from "./parse.js";
+import { pdfToLines } from "./pdf.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
 const MAX_FILE = 20 * 1024 * 1024;
@@ -21,6 +22,8 @@ const BTN_CAT = "🗂 Muallif testlari";
 const BTN_SET = "⚙️ Sozlamalar";
 const BTN_REVIEW = "🧠 Takrorlash";
 const BTN_DONATE = "💝 Qo'llab-quvvatlash";
+const BTN_TOOLS = "🧰 Fayl vositalari";
+const TOOL_MAX_FILES = 30, TOOL_MAX_BYTES = 45 * 1024 * 1024;
 const DAY = 86400e3;
 const REVIEW_STEPS = [1, 3, 7]; // xatodan keyin 1 kun, so'ng 3 va 7 kun; 3 marta to'g'ri — o'zlashtirildi
 const REVIEW_MAX = 50;
@@ -32,7 +35,7 @@ const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yok
   "🗂 Fayl qanday bo'lishi kerakligini ko'rish uchun: /namuna";
 const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
 const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }, { text: BTN_REVIEW }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
-  [{ text: BTN_AD }, { text: BTN_SET }], [{ text: BTN_DONATE }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
+  [{ text: BTN_AD }, { text: BTN_SET }], [{ text: BTN_TOOLS }, { text: BTN_DONATE }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 // Buyruqlar menyusi: hamma uchun va faqat muallif uchun
@@ -45,6 +48,7 @@ const USER_COMMANDS = [
   { command: "hisobot", description: "📈 Hisobot — guruh testlari va o'quvchilar" },
   { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
   { command: "namuna", description: "📄 Namunalar — test fayli qanday bo'ladi" },
+  { command: "vositalar", description: "🧰 Fayl vositalari — PDF, CSV, TXT" },
   { command: "yozish", description: "💬 Muallifga yozish — bot orqali xabar" },
   { command: "author", description: "👨‍🏫 Muallif — savol va takliflar" },
   { command: "donat", description: "💝 Qo'llab-quvvatlash — bot rivojiga hissa" },
@@ -823,6 +827,137 @@ export class Chat extends DurableObject {
     return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇\n\n💬 <b>Bot orqali yozish</b> — xabaringiz muallifga shu bot orqali boradi, javob ham shu yerga keladi.`,
       { reply_markup: kb([[btn("💬 Bot orqali yozish", "sup:new")], [{ text: "✉️ Telegramda yozish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
   }
+  // ---------- 🧰 Fayl vositalari (fayllar saqlanmaydi — faqat Telegram file_id lar vaqtincha) ----------
+  toolsMenu(editId) {
+    const text = "🧰 <b>Fayl vositalari</b>\n\nNimani qilamiz?\n\n🖼 <b>Rasmlardan PDF</b> — bir nechta JPG/PNG bitta PDF bo'ladi\n📎 <b>PDF birlashtirish</b> — bir nechta PDF bitta faylga\n📊 <b>Excel → CSV</b> — .xlsx jadvalni CSV qilish\n📄 <b>PDF → TXT</b> — PDF ichidagi matnni olish\n\n<i>Fayllar botda saqlanmaydi: natija yuborilgach hammasi o'chadi.</i>";
+    const reply_markup = kb([[btn("🖼 Rasmlardan PDF", "tl:img"), btn("📎 PDF birlashtirish", "tl:merge")], [btn("📊 Excel → CSV", "tl:csv"), btn("📄 PDF → TXT", "tl:txt")]]);
+    return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
+  }
+  async startTool(kind, editId) {
+    await this.st.put("tool", { kind, files: [], bytes: 0 });
+    const t = {
+      img: "🖼 <b>Rasmlardan PDF</b>\n\nRasmlarni yuboring (JPG yoki PNG, bir nechtasini birdaniga ham bo'ladi). PDF'da rasmlar yuborilgan tartibda bo'ladi.\nTugatgach «✅ PDF yaratish» ni bosing.",
+      merge: "📎 <b>PDF birlashtirish</b>\n\nPDF fayllarni birlashtirish tartibida yuboring (kamida 2 ta).\nTugatgach «✅ Birlashtirish» ni bosing.",
+      csv: "📊 <b>Excel → CSV</b>\n\nExcel faylni (.xlsx) yuboring. Har bir varaq alohida CSV fayl bo'ladi.",
+      txt: "📄 <b>PDF → TXT</b>\n\nPDF faylni yuboring — ichidagi matn .txt fayl qilib qaytariladi.",
+    }[kind];
+    return this.edit(editId, t + `\n\n<i>Har bir fayl 20 MB gacha, jami ${TOOL_MAX_FILES} tagacha.</i>`, { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) });
+  }
+  async downloadTg(fileId) {
+    const f = await this.tgx("getFile", { file_id: fileId });
+    if (!f.ok) throw new Error("Faylni olib bo'lmadi (20 MB dan katta bo'lishi mumkin)");
+    const r = await fetch(`https://api.telegram.org/file/bot${this.env.BOT_TOKEN}/${f.result.file_path}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
+  async sendFile(bytes, filename, caption, type = "application/octet-stream") {
+    const fd = new FormData();
+    fd.append("chat_id", String(this.chatId));
+    if (caption) { fd.append("caption", caption); fd.append("parse_mode", "HTML"); }
+    fd.append("document", new Blob([bytes], { type }), filename);
+    const r = await fetch(`https://api.telegram.org/bot${this.env.BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+    return r.json().catch(() => ({ ok: false }));
+  }
+  async onToolInput(m) {
+    const tool = await this.st.get("tool");
+    const d = m.document;
+    const name = d?.file_name || "fayl";
+    const size = d?.file_size || m.photo?.at(-1)?.file_size || 0;
+    if (size > 20 * 1024 * 1024) return this.send("❗ Fayl 20 MB dan katta — Telegram botlarga bunday faylni yuklab olishga ruxsat bermaydi.");
+    const isPdf = d && (/pdf/i.test(d.mime_type || "") || /\.pdf$/i.test(name));
+    const isImg = m.photo || (d && (/^image\/(jpeg|png)/i.test(d.mime_type || "") || /\.(jpe?g|png)$/i.test(name)));
+    if (tool.kind === "img" || tool.kind === "merge") {
+      if (tool.kind === "img" && !isImg) return this.send("❗ Faqat JPG yoki PNG rasm yuboring.");
+      if (tool.kind === "merge" && !isPdf) return this.send("❗ Faqat PDF fayl yuboring.");
+      if (tool.files.length >= TOOL_MAX_FILES) return this.send(`❗ Eng ko'pi ${TOOL_MAX_FILES} ta fayl.`);
+      if (tool.bytes + size > TOOL_MAX_BYTES) return this.send("❗ Fayllar jami hajmi juda katta (45 MB gacha). Shu yergacha birlashtiring.");
+      tool.files.push({ id: m.photo ? m.photo.at(-1).file_id : d.file_id, name });
+      tool.bytes += size;
+      if (tool.status) await this.tgx("deleteMessage", { chat_id: this.chatId, message_id: tool.status });
+      const n = tool.files.length;
+      const go = tool.kind === "img" ? `✅ PDF yaratish (${n})` : `✅ Birlashtirish (${n})`;
+      const r = await this.send(`${tool.kind === "img" ? "🖼" : "📎"} Qabul qilindi: <b>${n}</b> ta. Yana yuboring yoki tugating.`,
+        { reply_markup: kb([[btn(go, "tl:go")], [btn("❌ Bekor qilish", "tl:cancel")]]) });
+      tool.status = r.result?.message_id;
+      await this.st.put("tool", tool);
+      return;
+    }
+    // Bitta faylli vositalar
+    await this.st.delete("tool");
+    try {
+      if (tool.kind === "csv") {
+        if (!/\.xlsx$/i.test(name)) return this.send("❗ .xlsx fayl yuboring. Eski .xls bo'lsa, Excel'da «Saqlash → .xlsx» qiling. /vositalar");
+        await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+        const sheets = (await xlsxSheets(await this.downloadTg(d.file_id))).filter((sh) => sh.rows.some((r) => r.some((x) => x !== "")));
+        if (!sheets.length) return this.send("❗ Faylda ma'lumot topilmadi.");
+        const base = name.replace(/\.[^.]+$/, "");
+        const q = (v) => /[",\n\r]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+        for (const sh of sheets.slice(0, 10)) {
+          const csv = "\ufeff" + sh.rows.map((r) => r.map(q).join(",")).join("\r\n");
+          await this.sendFile(new TextEncoder().encode(csv), `${base}${sheets.length > 1 ? "_" + sh.name.replace(/[\\/:*?"<>|]/g, "_") : ""}.csv`,
+            `📊 ${esc(sh.name)} — ${sh.rows.length} qator`, "text/csv");
+        }
+        return this.send("✅ Tayyor. Yana: /vositalar");
+      }
+      if (tool.kind === "txt") {
+        if (!isPdf) return this.send("❗ PDF fayl yuboring. /vositalar");
+        await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+        const lines = await pdfToLines(await this.downloadTg(d.file_id));
+        const text = lines.join("\n").trim();
+        if (!text) return this.send("❗ PDF ichida matn topilmadi — u skanerlangan (rasm) bo'lishi mumkin.");
+        await this.sendFile(new TextEncoder().encode("\ufeff" + text), name.replace(/\.[^.]+$/, "") + ".txt", `📄 ${lines.length} qator matn`, "text/plain");
+        return this.send("✅ Tayyor. Yana: /vositalar");
+      }
+    } catch (e) {
+      console.log("Vosita xatosi", e);
+      return this.send(`❗ Faylni qayta ishlab bo'lmadi: <code>${esc(String(e?.message || e).slice(0, 120))}</code>`);
+    }
+  }
+  async runTool(msgId) {
+    const tool = await this.st.get("tool");
+    if (!tool?.files?.length) return this.edit(msgId, "❗ Hali fayl yuborilmadi.");
+    if (tool.kind === "merge" && tool.files.length < 2) return this.edit(msgId, "❗ Birlashtirish uchun kamida 2 ta PDF kerak.", { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) });
+    await this.st.delete("tool");
+    await this.edit(msgId, "⏳ Tayyorlanmoqda…");
+    await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+    try {
+      const { PDFDocument } = await import("./pdf-lib.js");
+      const out = await PDFDocument.create();
+      let pages = 0, skipped = 0;
+      for (const f of tool.files) {
+        const bytes = await this.downloadTg(f.id);
+        if (tool.kind === "img") {
+          const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
+          const isJpg = bytes[0] === 0xff && bytes[1] === 0xd8;
+          if (!isPng && !isJpg) { skipped++; continue; }
+          const img = isPng ? await out.embedPng(bytes) : await out.embedJpg(bytes);
+          // A4 sahifa, rasm yo'nalishiga qarab; rasm chetlardan 20pt joy qoldirib markazga joylanadi
+          const land = img.width > img.height;
+          const [W, H] = land ? [842, 595] : [595, 842];
+          const k = Math.min((W - 40) / img.width, (H - 40) / img.height);
+          const w = img.width * k, h = img.height * k;
+          out.addPage([W, H]).drawImage(img, { x: (W - w) / 2, y: (H - h) / 2, width: w, height: h });
+          pages++;
+        } else {
+          let src;
+          try { src = await PDFDocument.load(bytes, { ignoreEncryption: true }); } catch { skipped++; continue; }
+          const copied = await out.copyPages(src, src.getPageIndices());
+          copied.forEach((p) => out.addPage(p));
+          pages += copied.length;
+        }
+      }
+      if (!pages) return this.send("❗ Fayllarni o'qib bo'lmadi.");
+      const data = await out.save({ useObjectStreams: true });
+      if (data.length > 49 * 1024 * 1024) return this.send("❗ Natija 50 MB dan katta — Telegram yuborishga ruxsat bermaydi. Kamroq fayl bilan urinib ko'ring.");
+      const r = await this.sendFile(data, tool.kind === "img" ? "LingoUP_rasmlar.pdf" : "LingoUP_birlashtirilgan.pdf",
+        `✅ ${pages} sahifa` + (skipped ? ` · ⚠️ ${skipped} ta fayl o'qilmadi` : ""), "application/pdf");
+      if (!r.ok) return this.send("❗ Faylni yuborib bo'lmadi.");
+      return this.edit(msgId, "✅ Tayyor. Yana: /vositalar");
+    } catch (e) {
+      console.log("Vosita xatosi", e);
+      return this.send(`❗ Xatolik: <code>${esc(String(e?.message || e).slice(0, 120))}</code>`);
+    }
+  }
+
   // ---------- Muallif bilan yozishma ----------
   async askSupport(editId) {
     await this.st.put("awaitSupport", 1);
@@ -998,7 +1133,7 @@ export class Chat extends DurableObject {
     }
     // Muallif reklama postini yuboryapti
     // Muallif bilan yozishma: foydalanuvchi xabari muallifga, muallif javobi foydalanuvchiga
-    if (isPrivate && !text.startsWith("/") && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE].includes(text)) {
+    if (isPrivate && !text.startsWith("/") && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE, BTN_TOOLS].includes(text)) {
       const replyTo = this.isAuthor(m.from) ? await this.st.get("awaitReply") : null;
       if (replyTo) return this.sendSupportReply(m, replyTo);
       if (await this.st.get("awaitSupport")) return this.forwardToAuthor(m);
@@ -1024,7 +1159,7 @@ export class Chat extends DurableObject {
       const [cmd, target] = head.slice(1).split("@");
       if (target && target.toLowerCase() !== (await botName(this.env)).toLowerCase()) return;
       const arg = rest.join(" ");
-      if (isPrivate) { await this.st.delete("awaitMat"); await this.st.delete("awaitSupport"); await this.st.delete("awaitReply"); }
+      if (isPrivate) { await this.st.delete("awaitMat"); await this.st.delete("awaitSupport"); await this.st.delete("awaitReply"); await this.st.delete("tool"); }
       switch (cmd.toLowerCase()) {
         case "start":
           if (isPrivate && !(await this.st.get("lang"))) {
@@ -1040,6 +1175,9 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "vositalar":
+        case "tools":
+          return isPrivate ? this.toolsMenu() : null;
         case "yozish":
         case "support":
           return isPrivate ? this.askSupport() : null;
@@ -1164,6 +1302,7 @@ export class Chat extends DurableObject {
         case "myquizzes":
           return isPrivate ? this.myTests(m.from.id) : null;
         case "cancel":
+          await this.st.delete("tool");
           await this.st.delete("awaitSupport");
           await this.st.delete("awaitReply");
           await this.st.delete("manual");
@@ -1183,6 +1322,7 @@ export class Chat extends DurableObject {
     }
     if (!isPrivate) return;
     if (!m.document && (await this.st.get("awaitMat"))) await this.st.delete("awaitMat");
+    if ((m.document || m.photo) && (await this.st.get("tool"))) return this.onToolInput(m);
     if (m.document && (await this.st.get("awaitMat")) && this.isAuthor(m.from)) return this.onMaterialFile(m.document, m.caption);
     if (m.document) return this.onFile(m.document);
     if (m.poll) return this.onQuizPoll(m.poll);
@@ -1200,6 +1340,7 @@ export class Chat extends DurableObject {
     if (text === BTN_GUIDE) return this.guideMenu();
     if (text === BTN_REVIEW) return this.reviewMenu(m.from.id);
     if (text === BTN_DONATE) return this.donateMenu();
+    if (text === BTN_TOOLS) return this.toolsMenu();
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
     if (!text) return;
 
@@ -2345,6 +2486,13 @@ export class Chat extends DurableObject {
       await answer();
       if (val === "del") { await store.setSetting("donate", ""); return this.edit(msgId, "🗑 Donat ma'lumoti o'chirildi. Qayta sozlash: /donatsozla"); }
       return this.donateSetup();
+    }
+    if (kind === "tl") {
+      await answer();
+      if (val === "cancel") { await this.st.delete("tool"); return this.edit(msgId, "❌ Bekor qilindi. /vositalar"); }
+      if (val === "go") return this.runTool(msgId);
+      if (["img", "merge", "csv", "txt"].includes(val)) return this.startTool(val, msgId);
+      return this.toolsMenu(msgId);
     }
     if (kind === "sup") {
       await answer();
