@@ -618,6 +618,7 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
     [{ text: "🔗 Testni ulashish", switch_inline_query: quiz.id }],
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
+  if (owner && quiz.status !== "pending") rows.push([btn("🗳 Kanalda so'rovnoma qilish", `cp:${quiz.id}`)]);
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
   else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : quiz.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
@@ -1157,6 +1158,8 @@ export class Chat extends DurableObject {
         reply_to_message_id: m.message_id,
         reply_markup: kb([[btn("📤 Post qilib yuborish", "admode:send")], [btn("📌 Yuborish va tepaga qadash", "admode:pin")], [btn("❌ Bekor qilish", "ad:cancel")]]) });
     }
+    // Kanalda so'rovnoma: foydalanuvchi kanal manzilini yozdi yoki kanaldan post forward qildi
+    if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitCpost"))) return this.cpostChannel(m);
     if (text.startsWith("/")) {
       const [head, ...rest] = text.trim().split(/\s+/);
       const [cmd, target] = head.slice(1).split("@");
@@ -1311,12 +1314,13 @@ export class Chat extends DurableObject {
           await this.st.delete("manual");
           await this.st.delete("awaitAd");
           await this.st.delete("awaitDonate");
+          await this.st.delete("awaitCpost");
           await this.st.delete("awaitMat");
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-16 · pullik tarif</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-18 · pullik tarif</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2548,6 +2552,9 @@ export class Chat extends DurableObject {
       }
     }
 
+    // Kanalda so'rovnoma (viktorina) joylash
+    if (kind === "cp" || kind === "cpi" || kind === "cpgo" || kind === "cpx") return this.cpostCallback(kind, val, msgId, uid, answer);
+
     // Test o'tkazish
     if (kind === "run") {
       const quiz = await store.getQuiz(val);
@@ -2632,6 +2639,150 @@ export class Chat extends DurableObject {
     return answer();
   }
 
+  // ---------- Kanalda so'rovnoma ----------
+  async cpostCallback(kind, val, msgId, uid, answer) {
+    const store = this.store();
+    if (kind === "cpx" && val === "none") {
+      await this.st.delete("cpDraft");
+      await answer();
+      return this.edit(msgId, "❌ Bekor qilindi.");
+    }
+    if (kind === "cpx") {
+      const r = await this.env.CHAT.get(this.env.CHAT.idFromName(val)).stopCpost(uid);
+      await answer(r ? "⏹ To'xtatildi" : "Hozir so'rovnoma ketmayapti", true);
+      return;
+    }
+    if (kind === "cp") {
+      const quiz = await store.getQuiz(val);
+      if (!quiz) return answer("Test topilmadi", true);
+      if (quiz.owner !== uid) return answer("Faqat test egasi kanalga joylay oladi", true);
+      await answer();
+      await this.st.put("awaitCpost", { id: val });
+      return this.send("🗳 <b>Kanalda so'rovnoma</b>\n\nTestdagi savollar kanalingizga viktorina (quiz) ko'rinishida ketma-ket joylanadi.\n\n" +
+        "1️⃣ Botni kanalingizga <b>admin</b> qilib qo'shing va unga «Xabar joylash» huquqini bering.\n" +
+        "2️⃣ Kanal manzilini yozing (masalan <code>@kanalim</code>) yoki kanaldan istalgan postni shu yerga forward qiling.\n\nBekor qilish: /cancel");
+    }
+    const draft = await this.st.get("cpDraft");
+    if (!draft) return answer("Qaytadan boshlang: testni ochib «🗳 Kanalda so'rovnoma qilish» ni bosing", true);
+    if (kind === "cpi") {
+      const sec = parseInt(val, 10) || 0;
+      draft.interval = sec;
+      await this.st.put("cpDraft", draft);
+      await answer();
+      return this.edit(msgId, `🗳 <b>${esc(draft.title)}</b>\n📢 Kanal: <b>${esc(draft.chatTitle)}</b>\n🖊 ${draft.n} ta savol\n` +
+        `⏳ Oraliq: ${CP_LABEL(sec)}\n\nBoshlaymizmi?`,
+        { reply_markup: kb([[btn("🚀 Boshlash", "cpgo:1")], [btn("⬅️ Oraliqni o'zgartirish", "cpgo:0")]]) });
+    }
+    if (kind === "cpgo") {
+      await answer();
+      if (val === "0") return this.edit(msgId, "⏳ Savollar orasida qancha vaqt bo'lsin?", { reply_markup: cpIntervalKb() });
+      const quiz = await store.getQuiz(draft.id);
+      if (!quiz || quiz.owner !== uid) return this.edit(msgId, "❗ Test topilmadi.");
+      const questions = prepare(quizQuestions(quiz), quiz.shuffle || "all");
+      if (!questions.length) return this.edit(msgId, "❗ Savol tuzib bo'lmadi.");
+      const me = await botName(this.env);
+      const r = await this.env.CHAT.get(this.env.CHAT.idFromName(String(draft.chat))).startCpost({
+        chat: draft.chat, chatTitle: draft.chatTitle, owner: uid, ownerChat: this.chatId, qid: quiz.id, title: quiz.title,
+        description: quiz.description || "", questions, idx: -1, interval: draft.interval || 0, bot: me, started: Date.now() });
+      await this.st.delete("cpDraft");
+      if (!r.ok) return this.edit(msgId, "⏳ Bu kanalda hozir boshqa so'rovnoma joylanmoqda. Avval uni tugating yoki to'xtating.",
+        { reply_markup: kb([[btn("⏹ Uni to'xtatish", `cpx:${draft.chat}`)]]) });
+      return this.edit(msgId, `🚀 «${esc(quiz.title)}» — ${questions.length} ta savol <b>${esc(draft.chatTitle)}</b> kanaliga joylanmoqda.\n` +
+        `⏳ Oraliq: ${CP_LABEL(draft.interval || 0)}\nTugagach sizga xabar beraman.`,
+        { reply_markup: kb([[btn("⏹ To'xtatish", `cpx:${draft.chat}`)]]) });
+    }
+  }
+
+  async cpostChannel(m) {
+    const fo = m.forward_origin;
+    let target = fo?.type === "channel" ? fo.chat.id : m.forward_from_chat?.id;
+    if (!target) {
+      const t = (m.text || "").trim().replace(/^https?:\/\/t\.me\//i, "@").replace(/^t\.me\//i, "@");
+      if (/^@[A-Za-z0-9_]{4,}$/.test(t) || /^-100\d+$/.test(t)) target = t;
+    }
+    if (!target) return this.send("❗ Kanal manzilini <code>@kanalim</code> ko'rinishida yozing yoki kanaldan postni forward qiling.\nBekor qilish: /cancel");
+    const info = await this.tgx("getChat", { chat_id: target });
+    if (!info.ok || info.result.type !== "channel")
+      return this.send("❗ Kanal topilmadi. Manzilni tekshiring va bot kanalga admin qilib qo'shilganiga ishonch hosil qiling.");
+    const chat = info.result;
+    const me = (await this.tgx("getMe", {})).result;
+    const bm = await this.tgx("getChatMember", { chat_id: chat.id, user_id: me.id });
+    if (!bm.ok || bm.result.status !== "administrator" || !bm.result.can_post_messages)
+      return this.send(`⚠️ Bot <b>${esc(chat.title)}</b> kanalida admin emas yoki unda «Xabar joylash» huquqi yo'q. Huquqni berib, qaytadan yuboring.`);
+    const um = await this.tgx("getChatMember", { chat_id: chat.id, user_id: m.from.id });
+    if (!um.ok || !["creator", "administrator"].includes(um.result.status))
+      return this.send("⛔️ Faqat o'zingiz admin bo'lgan kanalga so'rovnoma joylay olasiz.");
+    const aw = await this.st.get("awaitCpost");
+    await this.st.delete("awaitCpost");
+    const quiz = await this.store().getQuiz(aw.id);
+    if (!quiz) return this.send("❗ Test topilmadi.");
+    await this.st.put("cpDraft", { id: quiz.id, title: quiz.title, chat: chat.id, chatTitle: chat.title, n: quizQuestions(quiz).length, interval: 0 });
+    return this.send(`✅ Kanal: <b>${esc(chat.title)}</b>\n\n⏳ Savollar orasida qancha vaqt bo'lsin?`, { reply_markup: cpIntervalKb() });
+  }
+
+  // Kanal obyekti tomonida: navbatni boshlash / to'xtatish
+  async startCpost(job) {
+    const cur = await this.st.get("cpost");
+    if (cur) return { ok: false };
+    await this.st.put("cpost", job);
+    await this.st.setAlarm(Date.now() + 1000);
+    return { ok: true };
+  }
+  async stopCpost(uid) {
+    const cp = await this.st.get("cpost");
+    if (!cp || (cp.owner !== uid && !this.isAuthor({ id: uid }))) return false;
+    cp.stopped = true;
+    await this.st.put("cpost", cp);
+    await this.st.setAlarm(Date.now() + 500);
+    return true;
+  }
+  async cpostTick(cp) {
+    const notify = (text) => tg(this.env, "sendMessage", { chat_id: cp.ownerChat, text, parse_mode: "HTML" });
+    const done = cp.stopped || cp.idx + 1 >= cp.questions.length;
+    if (done) {
+      await this.st.delete("cpost");
+      const sent = cp.idx + 1;
+      if (!cp.stopped) await tg(this.env, "sendMessage", { chat_id: cp.chat, parse_mode: "HTML", disable_web_page_preview: true,
+        text: `🏁 <b>${esc(cp.title)}</b> — ${sent} ta savol yakunlandi!\n\n📚 Testni botda yechib, natijangizni reytingda ko'ring:`,
+        reply_markup: kb([[{ text: "▶️ Botda yechish", url: `https://t.me/${cp.bot}?start=${cp.qid}` }]]) });
+      return notify(cp.stopped ? `⏹ «${esc(cp.title)}» to'xtatildi. Kanalga ${sent} ta savol joylandi.` +
+        (cp.err ? `\n⚠️ Sabab: ${esc(cp.err)}` : "") : `✅ «${esc(cp.title)}» — ${sent} ta savol <b>${esc(cp.chatTitle)}</b> kanaliga joylandi.`);
+    }
+    if (cp.idx === -1 && !cp.head) {
+      await tg(this.env, "sendMessage", { chat_id: cp.chat, parse_mode: "HTML",
+        text: `🎲 <b>${esc(cp.title)}</b>\n` + (cp.description ? `<i>${esc(cp.description)}</i>\n` : "") + `\n🖊 ${cp.questions.length} ta savol. Omad!` });
+      cp.head = true;
+    }
+    const i = cp.idx + 1, q = cp.questions[i];
+    const num = `[${i + 1}/${cp.questions.length}]`;
+    let question = `${num} ${q.q}`;
+    const long = question.length > 300;
+    if (q.img) {
+      const ph = await tg(this.env, "sendPhoto", { chat_id: cp.chat, photo: q.img,
+        ...(long ? { caption: `<b>${num}</b> ${esc(q.q)}`.slice(0, 1024), parse_mode: "HTML" } : {}) });
+      if (long) question = ph.ok ? `${num} ⬆️ Rasmdagi savolga javob bering` : question.slice(0, 297) + "…";
+    } else if (long) {
+      await tg(this.env, "sendMessage", { chat_id: cp.chat, text: `<b>${num}</b> ${esc(q.q)}`, parse_mode: "HTML" });
+      question = `${num} ⬆️ Yuqoridagi savolga javob bering`;
+    }
+    const body = { chat_id: cp.chat, question, type: "quiz", is_anonymous: true, correct_option_id: q.correct,
+      options: q.opts.map((o) => ({ text: o.length > 100 ? o.slice(0, 99) + "…" : o })) };
+    if (q.exp) body.explanation = q.exp.slice(0, EXP_MAX);
+    const r = await tg(this.env, "sendPoll", body);
+    if (!r.ok) {
+      if (r.error_code === 429) {
+        await this.st.put("cpost", cp);
+        return this.st.setAlarm(Date.now() + ((r.parameters?.retry_after || 10) + 1) * 1000);
+      }
+      cp.stopped = true; cp.err = r.description || "noma'lum xato";
+      await this.st.put("cpost", cp);
+      return this.st.setAlarm(Date.now() + 500);
+    }
+    cp.idx = i;
+    await this.st.put("cpost", cp);
+    await this.st.setAlarm(Date.now() + Math.max(3, cp.interval) * 1000);
+  }
+
   // ---------- Test sessiyasi ----------
   async prepareSession(quiz, userId, chatType, { record = true, review = false } = {}) {
     const old = await this.st.get("sess");
@@ -2703,6 +2854,8 @@ export class Chat extends DurableObject {
 
   // Taymer: joriy savolni yopadi va keyingisini yuboradi
   async alarm() {
+    const cp = await this.st.get("cpost");
+    if (cp) return this.cpostTick(cp);
     this.chatId = await this.st.get("chatId");
     await this.loadLang();
     // Saqlangan fayl muddati tugagan bo'lsa — o'chiramiz
@@ -2874,6 +3027,14 @@ export class Chat extends DurableObject {
     if (tch) rows.push([{ text: "📢 Yangi testlar kanali", url: tch.link }]);
     return this.send(text, { reply_markup: kb(rows) });
   }
+}
+
+// Kanalda so'rovnoma: savollar orasidagi vaqt
+const CP_STEPS = [0, 60, 300, 900, 1800, 3600];
+const CP_LABEL = (s) => (!s ? "ketma-ket (3 soniya)" : s < 3600 ? `${s / 60} daqiqa` : `${s / 3600} soat`);
+function cpIntervalKb() {
+  const b = (s) => btn(!s ? "⚡️ Ketma-ket" : s < 3600 ? `${s / 60} daq` : `${s / 3600} soat`, `cpi:${s}`);
+  return kb([CP_STEPS.slice(0, 3).map(b), CP_STEPS.slice(3).map(b), [btn("❌ Bekor qilish", "cpx:none")]]);
 }
 
 function timerKb(prefix, suffix = "") {
