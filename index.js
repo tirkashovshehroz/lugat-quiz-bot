@@ -280,6 +280,9 @@ export class Store extends DurableObject {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS games(id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER, chatTitle TEXT, qid TEXT, title TEXT,
       starter INTEGER, created INTEGER, asked INTEGER)`);
     // Har bir test savollari bo'yicha xato statistikasi (Mini App uchun)
+    // Javob varaqasi (OMR) skanerlash natijalari
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS omr(id INTEGER PRIMARY KEY AUTOINCREMENT, qid TEXT, owner INTEGER, created INTEGER,
+      student TEXT, name TEXT, answers TEXT, ok INTEGER, total INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS qstats(qid TEXT, k TEXT, q TEXT, ans TEXT, wrong INTEGER, total INTEGER, PRIMARY KEY(qid, k))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS game_scores(game INTEGER, uid INTEGER, name TEXT, ok INTEGER, bad INTEGER, secs REAL, PRIMARY KEY(game, uid))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS game_words(game INTEGER, q TEXT, ans TEXT, wrong INTEGER, total INTEGER)`);
@@ -402,7 +405,7 @@ export class Store extends DurableObject {
   deleteQuiz(id, owner) {
     const n = this.sql.exec("SELECT id FROM quizzes WHERE id=? AND owner=?", id, owner).toArray().length;
     this.sql.exec("DELETE FROM quizzes WHERE id=? AND owner=?", id, owner);
-    if (n) this.sql.exec("DELETE FROM results WHERE qid=?", id);
+    if (n) { this.sql.exec("DELETE FROM results WHERE qid=?", id); this.sql.exec("DELETE FROM omr WHERE qid=?", id); }
     return n > 0;
   }
   // Har bir foydalanuvchining eng yaxshi natijasi saqlanadi (ko'proq to'g'ri, teng bo'lsa — tezroq)
@@ -421,6 +424,21 @@ export class Store extends DurableObject {
     const better = this.sql.exec("SELECT COUNT(*) AS n FROM results WHERE qid=? AND (ok>? OR (ok=? AND secs<?))",
       qid, me.ok, me.ok, me.secs).toArray()[0].n;
     return { place: better + 1, total: this.takers(qid) };
+  }
+  setQuestions(id, owner, qs) {
+    this.sql.exec("UPDATE quizzes SET questions=?, count=? WHERE id=? AND owner=?", JSON.stringify(qs), qs.length, id, owner);
+  }
+  addScan(r) {
+    this.sql.exec("INSERT INTO omr(qid,owner,created,student,name,answers,ok,total) VALUES(?,?,?,?,?,?,?,?)",
+      r.qid, r.owner, Date.now(), r.student || "", r.name || "", JSON.stringify(r.answers), r.ok, r.total);
+    return this.sql.exec("SELECT last_insert_rowid() AS id").toArray()[0].id;
+  }
+  listScans(qid, owner) {
+    return this.sql.exec("SELECT id, created, student, name, answers, ok, total FROM omr WHERE qid=? AND owner=? ORDER BY created DESC LIMIT 500", qid, owner)
+      .toArray().map((r) => ({ ...r, answers: JSON.parse(r.answers || "[]") }));
+  }
+  delScan(id, owner) {
+    this.sql.exec("DELETE FROM omr WHERE id=? AND owner=?", id, owner);
   }
   addQStats(qid, rows) {
     for (const r of rows)
@@ -1353,7 +1371,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · Mini App 3</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · Mini App 4 (OMR)</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;

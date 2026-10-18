@@ -2,6 +2,20 @@
 // 1-bosqich: «Mening testlarim» va savollarni tahrirlash
 import { findLink, badWord } from "./index.js";
 import { APP_HTML } from "./app.html.js";
+import { omrLayout, omrScan, omrHomography, answerSheetPdf, questionsDoc, LETTERS } from "./omr.js";
+
+// Skaner funksiyalari ilova sahifasiga to'g'ridan-to'g'ri qo'shiladi (server va ilova bir xil varaq tuzilishidan foydalanadi)
+const PAGE = APP_HTML.replace("/*OMR_CODE*/", [omrLayout, omrHomography, omrScan].map((f) => f.toString()).join("\n"));
+
+async function sendDoc(env, chatId, bytes, filename, caption, type) {
+  const fd = new FormData();
+  fd.append("chat_id", String(chatId));
+  if (caption) { fd.append("caption", caption); fd.append("parse_mode", "HTML"); }
+  fd.append("document", new Blob([bytes], { type }), filename);
+  const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+  return r.json().catch(() => ({ ok: false }));
+}
+const fileName = (t) => (String(t || "test").replace(/[\\/:*?"<>|\n\r]+/g, " ").trim().slice(0, 60) || "test");
 
 const MAX_Q = 5000;
 const Q_MAX = 1000; // savol matni (300 dan uzuni bot tomonidan alohida xabar qilib yuboriladi)
@@ -80,7 +94,7 @@ async function savedChannels(store, uid) {
 export async function handleApp(req, env, url, store, h) {
   const { buildQuestions } = h;
   if (url.pathname === "/app") {
-    return new Response(APP_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+    return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
   }
   // Savol rasmi (Telegram file_id orqali) — <img> sarlavha yubora olmagani uchun imzosiz
   if (url.pathname === "/api/img") {
@@ -223,6 +237,66 @@ export async function handleApp(req, env, url, store, h) {
   if (path === "/cpstop" && req.method === "POST") {
     const ok = await h.chat(String(body.chat)).stopCpost(uid);
     return json({ ok });
+  }
+
+  // ---------- Javob varaqasi (OMR) ----------
+  const omrKey = (qs) => ({ n: Math.min(qs.length, 100), k: Math.min(5, Math.max(2, ...qs.slice(0, 100).map((q) => q.opts.length))) });
+  if (path === "/omrinfo" && req.method === "GET") {
+    const qs = quiz.questions || [];
+    const scans = await store.listScans(id, uid);
+    return json({ ready: qs.length > 0, ...(qs.length ? omrKey(qs) : { n: Math.min(quiz.count || 0, 100), k: 4 }),
+      key: qs.slice(0, 100).map((q) => q.correct), scans, big: qs.length > 100,
+      wide: qs.slice(0, 100).some((q) => q.opts.length > 5) });
+  }
+  if (path === "/omrsheet" && req.method === "POST") {
+    let qs = quiz.questions;
+    if (!qs?.length) { // eski (lug'at) testlar: savollarni bir marta qotirib qo'yamiz, varaq kaliti o'zgarmasligi uchun
+      qs = buildQuestions(quiz.pairs, quiz.count, quiz.direction || "fwd");
+      await store.setQuestions(id, uid, qs);
+    }
+    const { n, k } = omrKey(qs);
+    const author = env.AUTHOR || "@Shehroz_hoca";
+    const pdf = await answerSheetPdf({ title: quiz.title, n, k, author });
+    const r1 = await sendDoc(env, uid, pdf, `${fileName(quiz.title)} - javob varaqasi.pdf`,
+      `📄 <b>Javob varaqasi</b> — ${n} ta savol, ${k} ta variant.\nKerakli sonda chop eting. Har bir o'quvchiga bitta varaq.`, "application/pdf");
+    const doc = new TextEncoder().encode(questionsDoc({ title: quiz.title, description: quiz.description, questions: qs, k, author }));
+    const r2 = await sendDoc(env, uid, doc, `${fileName(quiz.title)} - savollar.doc`,
+      "📝 <b>Savollar varag'i</b> (Word). Oxirgi sahifada javoblar kaliti bor — uni o'quvchilarga bermang.", "application/msword");
+    if (!r1.ok) return json({ error: "Faylni yuborib bo'lmadi. Botga /start yozib, qaytadan urinib ko'ring." }, 400);
+    return json({ ok: true, n, k, doc: !!r2.ok });
+  }
+  if (path === "/omr" && req.method === "POST") {
+    const qs = quiz.questions || [];
+    if (!qs.length) return json({ error: "Avval javob varaqasini oling" }, 400);
+    const { n } = omrKey(qs);
+    const ans = (Array.isArray(body.answers) ? body.answers : []).slice(0, n).map((a) => (Number.isInteger(a) && a >= -2 && a < 5 ? a : -1));
+    while (ans.length < n) ans.push(-1);
+    const ok = ans.filter((a, i) => a === qs[i].correct).length;
+    const scan = await store.addScan({ qid: id, owner: uid, student: str(body.student, 10), name: str(body.name, 60), answers: ans, ok, total: n });
+    const rows = ans.map((a, i) => a !== -1 && { k: String(qs[i].pair ? qs[i].pair[0] + "|" + qs[i].pair[1] : qs[i].q).slice(0, 300),
+      q: String(qs[i].q || "").slice(0, 200), ans: String(qs[i].opts[qs[i].correct] ?? "").slice(0, 100), wrong: a === qs[i].correct ? 0 : 1, total: 1 }).filter(Boolean);
+    if (rows.length) await store.addQStats(id, rows);
+    return json({ ok: true, scan, score: ok, total: n });
+  }
+  if (path === "/omrdel" && req.method === "POST") {
+    await store.delScan(Number(body.scan), uid);
+    return json({ ok: true });
+  }
+  if (path === "/omrxls" && req.method === "POST") {
+    const qs = quiz.questions || [];
+    const scans = (await store.listScans(id, uid)).reverse();
+    if (!scans.length) return json({ error: "Hali skaner qilingan varaq yo'q" }, 400);
+    const n = Math.min(qs.length, 100);
+    const cell = (v) => { const t = String(v ?? ""); return /[;"\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const L = (a) => (a >= 0 ? LETTERS[a] : a === -2 ? "*" : "");
+    const lines = ["sep=;", ["#", "Raqam", "Ism", "To'g'ri", "Jami", "%", "Sana", ...Array.from({ length: n }, (_, i) => `${i + 1}`)].join(";"),
+      ["", "", "KALIT", "", "", "", "", ...qs.slice(0, n).map((q) => L(q.correct))].map(cell).join(";")];
+    scans.forEach((s, i) => lines.push([i + 1, s.student, s.name, s.ok, s.total, Math.round((s.ok / s.total) * 100),
+      new Date(s.created + 5 * 3600e3).toISOString().slice(0, 16).replace("T", " "), ...s.answers.map(L)].map(cell).join(";")));
+    const avg = Math.round(scans.reduce((a, s) => a + s.ok / s.total, 0) / scans.length * 100);
+    const r = await sendDoc(env, uid, new TextEncoder().encode("\ufeff" + lines.join("\r\n")), `${fileName(quiz.title)} - natijalar.csv`,
+      `📊 <b>${scans.length} ta varaq natijasi</b> · o'rtacha ${avg}%\nExcel'da ochiladi. «*» — bir nechta javob belgilangan.`, "text/csv");
+    return json(r.ok ? { ok: true } : { error: "Faylni yuborib bo'lmadi" }, r.ok ? 200 : 400);
   }
 
   if (path === "/delete" && req.method === "POST") {
