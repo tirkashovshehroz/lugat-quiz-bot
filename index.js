@@ -3,6 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { parseFile, parseText, xlsxSheets } from "./parse.js";
 import { pdfToLines } from "./pdf.js";
+import { handleApp } from "./webapp.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
 const MAX_FILE = 20 * 1024 * 1024;
@@ -376,6 +377,12 @@ export class Store extends DurableObject {
     this.sql.exec("UPDATE quizzes SET questions=? WHERE id=?", JSON.stringify(qs), id);
     return true;
   }
+  // Mini App'dan tahrirlash: nom, tavsif, sozlamalar va barcha savollar birdaniga
+  saveEdits(id, owner, e) {
+    this.sql.exec("UPDATE quizzes SET title=?, description=?, timer=?, shuffle=?, questions=?, count=? WHERE id=? AND owner=?",
+      e.title, e.description, e.timer, e.shuffle, JSON.stringify(e.questions), e.questions.length, id, owner);
+    return true;
+  }
   setPublic(id, v) {
     this.sql.exec("UPDATE quizzes SET public=? WHERE id=?", v ? 1 : 0, id);
   }
@@ -619,6 +626,10 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
   if (owner && quiz.status !== "pending") rows.push([btn("🗳 Kanalda so'rovnoma qilish", `cp:${quiz.id}`)]);
+  if (owner) {
+    const app = await env.STORE.get(env.STORE.idFromName("db")).getSetting("appUrl");
+    if (app) rows.push([{ text: "📱 Ilovada tahrirlash", web_app: { url: `${app}#q=${quiz.id}` } }]);
+  }
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
   else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : quiz.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
@@ -1320,7 +1331,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-18 · pullik tarif</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-18 · Mini App</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -1887,6 +1898,8 @@ export class Chat extends DurableObject {
     const takers = owner ? await this.store().takers(quiz.id) : null;
     const author = owner && String(uid) === String(await this.store().getSetting("authorId"));
     const c = await cardContent(this.env, quiz, { owner, takers, author });
+    // Mini App tugmasi faqat shaxsiy chatda ishlaydi
+    if (Number(this.chatId) < 0) c.reply_markup.inline_keyboard = c.reply_markup.inline_keyboard.filter((r) => !r.some((b) => b.web_app));
     if (!owner && isAdmin) c.reply_markup.inline_keyboard.push(
       [btn("🗑 Admin: o'chirish", `mod:del:${quiz.id}`), btn("🚫 Tuzuvchini bloklash", `mod:ban:${quiz.id}`)]);
     else if (!owner && String(quiz.owner) !== String(await this.store().getSetting("authorId")))
@@ -3283,6 +3296,9 @@ export default {
         drop_pending_updates: true,
       });
       await tg(env, "setMyCommands", { commands: USER_COMMANDS });
+      // Mini App: bot menyusidagi «📱 Ilova» tugmasi
+      await env.STORE.get(env.STORE.idFromName("db")).setSetting("appUrl", `${url.origin}/app`);
+      await tg(env, "setChatMenuButton", { menu_button: { type: "web_app", text: "📱 Ilova", web_app: { url: `${url.origin}/app` } } });
       for (const lc of ["ru", "en", "tr"]) await tg(env, "setMyCommands", { commands: trCommands(lc, USER_COMMANDS), language_code: lc });
       let msg = r.ok ? "✅ Bot ulandi! Endi Telegramda botingizga /start yozing." : "❌ Xato: " + r.description;
       const me = (await tg(env, "getMe", {})).result;
@@ -3304,6 +3320,8 @@ export default {
       ctx.waitUntil(route(update, env).catch((e) => console.log("Xato", e)));
       return new Response("ok");
     }
+    if (url.pathname === "/app" || url.pathname.startsWith("/api/"))
+      return handleApp(req, env, url, env.STORE.get(env.STORE.idFromName("db")), buildQuestions);
     return new Response("LingoUP bot ishlayapti ✅", { headers: { "content-type": "text/plain; charset=utf-8" } });
   },
 };
