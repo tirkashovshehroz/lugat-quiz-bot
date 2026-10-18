@@ -2,7 +2,7 @@
 // 1-bosqich: «Mening testlarim» va savollarni tahrirlash
 import { findLink, badWord } from "./index.js";
 import { APP_HTML } from "./app.html.js";
-import { omrLayout, omrScan, omrHomography, answerSheetPdf, questionsDoc, LETTERS } from "./omr.js";
+import { omrLayout, omrScan, omrHomography, answerSheetPdf, questionsPdf, questionsDoc, questionsTxt, questionsCsv, LETTERS } from "./omr.js";
 
 // Skaner funksiyalari ilova sahifasiga to'g'ridan-to'g'ri qo'shiladi (server va ilova bir xil varaq tuzilishidan foydalanadi)
 const PAGE = APP_HTML.replace("/*OMR_CODE*/", [omrLayout, omrHomography, omrScan].map((f) => f.toString()).join("\n"));
@@ -114,6 +114,22 @@ export async function handleApp(req, env, url, store, h) {
 
   if (path === "/me" && req.method === "GET") return json({ id: uid, name: user.first_name || "", author });
   if (path === "/channels" && req.method === "GET") return json({ items: await savedChannels(store, uid) });
+  // O'quv markazi nomi va logotipi (titul va savollar varag'i shapkasida)
+  const getBrand = async () => { try { return JSON.parse((await store.getSetting("brand:" + uid)) || "null"); } catch { return null; } };
+  if (path === "/brand" && req.method === "GET") return json({ brand: await getBrand() });
+  if (path === "/brand" && req.method === "POST") {
+    const b = await req.json().catch(() => ({}));
+    const name = str(b.name, 80);
+    let logo = null;
+    if (b.logo?.d) {
+      if (!["png", "jpg"].includes(b.logo.t) || typeof b.logo.d !== "string" || b.logo.d.length > 200000 || !/^[A-Za-z0-9+/=]+$/.test(b.logo.d))
+        return json({ error: "Logotip juda katta yoki noto'g'ri formatda" }, 400);
+      logo = { t: b.logo.t, d: b.logo.d };
+    }
+    if (!author && name && (findLink([name]) || badWord([name]))) return json({ error: "Nomda havola yoki taqiqlangan so'z bor" }, 400);
+    await store.setSetting("brand:" + uid, name || logo ? JSON.stringify({ name, logo }) : "");
+    return json({ ok: true });
+  }
 
   if (path === "/quizzes" && req.method === "GET") {
     const q = str(url.searchParams.get("q"), 60);
@@ -124,7 +140,60 @@ export async function handleApp(req, env, url, store, h) {
       chan: !!r.chanMsg, req: !!r.chanReq, pending: r.status === "pending" })) });
   }
 
+  // ---------- Yangi test: fayl yuklash ----------
+  if (path === "/parse" && req.method === "POST") {
+    const name = decodeURIComponent(req.headers.get("X-File-Name") || "fayl.txt").slice(0, 120);
+    const buf = await req.arrayBuffer();
+    const r = await h.chat(uid).appParse(user, name, buf);
+    return json(r, r.error ? 400 : 200);
+  }
   const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+  const me = h.chat(uid);
+  if (path === "/srcinfo" && req.method === "GET") return json(await me.appSrcInfo());
+  if (path === "/srcpick" && req.method === "POST") {
+    const r = await me.appSrcPick(body);
+    return json(r.error ? r : { n: r.list.length, sections: r.sections }, r.error ? 400 : 200);
+  }
+  if (path === "/create" && req.method === "POST") {
+    const r = await me.appCreate(user, body);
+    return json(r, r.error ? 400 : 200);
+  }
+  if (path === "/createmanual" && req.method === "POST") {
+    const title = str(body.title, 100);
+    if (!title) return json({ error: "Test nomini yozing" }, 400);
+    const c = cleanQuestions(body.questions);
+    if (c.error) return json({ error: c.error }, 400);
+    const description = str(body.description, 300);
+    if (!author) {
+      const texts = [title, description];
+      for (const x of c.questions) texts.push(x.q, x.exp, ...x.opts);
+      const link = findLink(texts);
+      if (link) return json({ error: `Testda havola yoki kanal/username bor: ${link}` }, 400);
+    }
+    const r = await me.appCreateManual(user, { title, description, questions: c.questions,
+      timer: TIMERS.includes(Number(body.timer)) ? Number(body.timer) : 30, shuffle: SHUFFLES.includes(body.shuffle) ? body.shuffle : "all" });
+    return json(r, r.error ? 400 : 200);
+  }
+  // ---------- Ko'proq: takrorlash, yo'riqnoma, muallif, sozlamalar, qo'llab-quvvatlash ----------
+  if (path === "/more" && req.method === "GET") {
+    const [review, guide, lang, donate] = await Promise.all([store.reviewSummary(uid), me.appGuideInfo(), me.appLang(), store.getSetting("donate")]);
+    return json({ review, guide, lang, donate: donate || "", author: env.AUTHOR || "@Shehroz_hoca", isAuthor: author, bot: await h.botName(env) });
+  }
+  if (path === "/support" && req.method === "POST") {
+    const text = str(body.text, 3000);
+    if (!text) return json({ error: "Xabar matnini yozing" }, 400);
+    const r = await me.appSupport(user, text);
+    return json(r, r.error ? 400 : 200);
+  }
+  if (path === "/guide" && req.method === "POST") {
+    const r = await me.appSendGuide(user, String(body.what ?? "bot"));
+    return json(r, r.error ? 400 : 200);
+  }
+  if (path === "/lang" && req.method === "POST") return json(await me.appLang(String(body.code || "")));
+  if (path === "/deldata" && req.method === "POST") {
+    if (body.confirm !== "DELETE") return json({ error: "Tasdiqlanmadi" }, 400);
+    return json(await me.appDeleteData(uid));
+  }
 
   // ---------- O'quvchi tomoni: test yechish ----------
   if (path === "/catalog" && req.method === "GET") {
@@ -143,6 +212,10 @@ export async function handleApp(req, env, url, store, h) {
       top: best.map((r) => ({ name: r.name, ok: r.ok, total: r.total })) });
   }
   if (path === "/play" && req.method === "POST") {
+    if (body.review) {
+      const r = await h.chat(uid).appStart(uid, {}, false, body.review === "due" ? "due" : "all");
+      return json(r, r.error ? 400 : 200);
+    }
     const q = await store.getQuiz(String(body.id || ""));
     if (!q || (q.status === "pending" && q.owner !== uid)) return json({ error: "Test topilmadi yoki o'chirilgan" }, 404);
     const r = await h.chat(uid).appStart(uid, q, !!body.retry);
@@ -255,15 +328,33 @@ export async function handleApp(req, env, url, store, h) {
       await store.setQuestions(id, uid, qs);
     }
     const { n, k } = omrKey(qs);
-    const author = env.AUTHOR || "@Shehroz_hoca";
-    const pdf = await answerSheetPdf({ title: quiz.title, n, k, author });
+    const author = env.AUTHOR || "@Shehroz_hoca", brand = await getBrand();
+    const pdf = await answerSheetPdf({ title: quiz.title, n, k, author, brand });
     const r1 = await sendDoc(env, uid, pdf, `${fileName(quiz.title)} - javob varaqasi.pdf`,
       `📄 <b>Javob varaqasi</b> — ${n} ta savol, ${k} ta variant.\nKerakli sonda chop eting. Har bir o'quvchiga bitta varaq.`, "application/pdf");
-    const doc = new TextEncoder().encode(questionsDoc({ title: quiz.title, description: quiz.description, questions: qs, k, author }));
-    const r2 = await sendDoc(env, uid, doc, `${fileName(quiz.title)} - savollar.doc`,
-      "📝 <b>Savollar varag'i</b> (Word). Oxirgi sahifada javoblar kaliti bor — uni o'quvchilarga bermang.", "application/msword");
+    const qpdf = await questionsPdf({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand });
+    const r2 = await sendDoc(env, uid, qpdf, `${fileName(quiz.title)} - savollar.pdf`,
+      "📝 <b>Savollar varag'i.</b> Oxirgi sahifada javoblar kaliti bor — uni o'quvchilarga bermang.", "application/pdf");
     if (!r1.ok) return json({ error: "Faylni yuborib bo'lmadi. Botga /start yozib, qaytadan urinib ko'ring." }, 400);
     return json({ ok: true, n, k, doc: !!r2.ok });
+  }
+  // Savollarni istalgan formatda yuklab olish (fayl bot chatiga keladi)
+  if (path === "/export" && req.method === "POST") {
+    let qs = quiz.questions;
+    if (!qs?.length) { qs = buildQuestions(quiz.pairs, quiz.count, quiz.direction || "fwd"); await store.setQuestions(id, uid, qs); }
+    const k = Math.max(2, ...qs.map((q) => q.opts.length)), author = env.AUTHOR || "@Shehroz_hoca", brand = await getBrand();
+    const enc = (t) => new TextEncoder().encode(t), nm = fileName(quiz.title);
+    const meta = { title: quiz.title, description: quiz.description, questions: qs, k, author, brand };
+    const out = {
+      pdf: async () => [await questionsPdf(meta), `${nm}.pdf`, "application/pdf", "📕 PDF — chop etish uchun. Oxirgi sahifada kalit."],
+      doc: async () => [enc(questionsDoc(meta)), `${nm}.doc`, "application/msword", "📘 Word — tahrirlash va chop etish uchun."],
+      xls: async () => [enc(questionsCsv(meta)), `${nm}.csv`, "text/csv", "📗 Excel jadvali: savol, variantlar, javob, izoh."],
+      txt: async () => [enc(questionsTxt(meta)), `${nm}.txt`, "text/plain", "📄 Matn — botga qayta yuborsangiz, xuddi shu test tuziladi."],
+    }[body.fmt];
+    if (!out) return json({ error: "Format noma'lum" }, 400);
+    const [bytes, fname, type, cap] = await out();
+    const r = await sendDoc(env, uid, bytes, fname, cap, type);
+    return json(r.ok ? { ok: true } : { error: "Faylni yuborib bo'lmadi. Botga /start yozib, qaytadan urinib ko'ring." }, r.ok ? 200 : 400);
   }
   if (path === "/omr" && req.method === "POST") {
     const qs = quiz.questions || [];
