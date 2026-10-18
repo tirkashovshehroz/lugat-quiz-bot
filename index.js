@@ -4,6 +4,8 @@ import { DurableObject } from "cloudflare:workers";
 import { parseFile, parseText, xlsxSheets } from "./parse.js";
 import { pdfToLines } from "./pdf.js";
 import { handleApp } from "./webapp.js";
+import { omrLayout, omrScan, omrHomography, toGray, gradeAnswers, answerSheetPdf, questionsPdf, questionsDoc, questionsTxt, questionsCsv, resultsCsv, LETTERS } from "./omr.js";
+import { decodeJpeg } from "./jpeg.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
 const MAX_FILE = 20 * 1024 * 1024;
@@ -670,6 +672,11 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   const app = await env.STORE.get(env.STORE.idFromName("db")).getSetting("appUrl");
   if (app) rows.splice(1, 0, [{ text: "📱 Ilovada yechish", web_app: { url: `${app}#p=${quiz.id}` } }]);
   if (owner && app) rows.push([{ text: "📱 Ilovada tahrirlash", web_app: { url: `${app}#q=${quiz.id}` } }]);
+  // EvalBee uslubidagi imkoniyatlar: titul, yuklab olish, varaqni tekshirish
+  if (owner && quiz.status !== "pending") {
+    rows.push([btn("📄 Titul olish", `ts:${quiz.id}`), btn("📥 Yuklab olish", `dl:${quiz.id}`)]);
+    rows.push([btn("📷 Varaqni tekshirish", `sc:${quiz.id}`), btn("📋 Varaq natijalari", `sr:${quiz.id}`)]);
+  }
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
   else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : quiz.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
@@ -1211,6 +1218,8 @@ export class Chat extends DurableObject {
     }
     // Kanalda so'rovnoma: foydalanuvchi kanal manzilini yozdi yoki kanaldan post forward qildi
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitCpost"))) return this.cpostChannel(m);
+    // Javob varaqasini tekshirish rejimi: surat kelsa — skaner qilamiz
+    if (isPrivate && (m.photo || /^image\//.test(m.document?.mime_type || "")) && (await this.st.get("awaitScan"))) return this.scanPhoto(m);
     if (text.startsWith("/")) {
       const [head, ...rest] = text.trim().split(/\s+/);
       const [cmd, target] = head.slice(1).split("@");
@@ -1366,12 +1375,13 @@ export class Chat extends DurableObject {
           await this.st.delete("awaitAd");
           await this.st.delete("awaitDonate");
           await this.st.delete("awaitCpost");
+          await this.st.delete("awaitScan");
           await this.st.delete("awaitMat");
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · Mini App 4 (OMR)</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · Mini App 5 (titul+skaner)</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2605,6 +2615,9 @@ export class Chat extends DurableObject {
       }
     }
 
+    // Titul, yuklab olish, varaqni tekshirish
+    if (["ts", "dl", "dlf", "sc", "scx", "sr", "scd"].includes(kind)) return this.omrCallback(kind, val, msgId, uid, answer);
+
     // Kanalda so'rovnoma (viktorina) joylash
     if (kind === "cp" || kind === "cpi" || kind === "cpgo" || kind === "cpx") return this.cpostCallback(kind, val, msgId, uid, answer);
 
@@ -2690,6 +2703,138 @@ export class Chat extends DurableObject {
       return this.st.setAlarm(Date.now() + 500);
     }
     return answer();
+  }
+
+  // ---------- Titul (javob varaqasi), yuklab olish va varaqni tekshirish ----------
+  async brand(uid) {
+    try { return JSON.parse((await this.store().getSetting("brand:" + uid)) || "null"); } catch { return null; }
+  }
+  // Varaq va kalit o'zgarmasligi uchun eski (lug'at) testlarning savollarini bir marta qotiramiz
+  async fixedQuestions(quiz) {
+    if (quiz.questions?.length) return quiz.questions;
+    const qs = buildQuestions(quiz.pairs, quiz.count, quiz.direction || "fwd");
+    await this.store().setQuestions(quiz.id, quiz.owner, qs);
+    return qs;
+  }
+  async omrCallback(kind, val, msgId, uid, answer) {
+    const store = this.store();
+    if (kind === "scd") {
+      await store.delScan(Number(val), uid);
+      await answer("🗑 O'chirildi");
+      return this.edit(msgId, "🗑 Bu varaq natijasi o'chirildi.");
+    }
+    if (kind === "scx") {
+      await this.st.delete("awaitScan");
+      await answer();
+      const quiz = val ? await store.getQuiz(val) : null;
+      const n = quiz ? (await store.listScans(quiz.id, uid)).length : 0;
+      return this.send(`✅ Tekshirish tugadi.${n ? ` Bu test bo'yicha jami ${n} ta varaq saqlangan.` : ""}`,
+        quiz && n ? { reply_markup: kb([[btn("📋 Natijalar (Excel)", `sr:${quiz.id}`)]]) } : {});
+    }
+    const id = kind === "dlf" ? val.split(":")[1] : val;
+    const quiz = await store.getQuiz(id);
+    if (!quiz) return answer("Test topilmadi", true);
+    if (quiz.owner !== uid) return answer("Faqat test egasi uchun", true);
+    const author = authorOf(this.env), brand = await this.brand(uid);
+    const name = (quiz.title || "test").replace(/[\\/:*?"<>|\n\r]+/g, " ").trim().slice(0, 60);
+    if (kind === "ts") {
+      await answer("⏳ Tayyorlanmoqda…");
+      await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+      const qs = await this.fixedQuestions(quiz);
+      const n = Math.min(qs.length, 100), k = Math.min(5, Math.max(2, ...qs.slice(0, 100).map((q) => q.opts.length)));
+      await this.sendFile(await answerSheetPdf({ title: quiz.title, n, k, author, brand }), `${name} - titul.pdf`,
+        `📄 <b>Titul (javob varaqasi)</b> — ${n} ta savol, A–${LETTERS[k - 1]}.\nHar bir o'quvchiga bitta varaq chop eting.` +
+        (brand?.name ? "" : "\n\n🏫 Markazingiz nomi va logotipini titulga qo'shish: ilova → test → 📄 Varaq."), "application/pdf");
+      await this.sendFile(await questionsPdf({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand }), `${name} - savollar.pdf`,
+        "📝 <b>Savollar varag'i.</b> Oxirgi sahifada javoblar kaliti bor — uni o'quvchilarga bermang.", "application/pdf");
+      return this.send("Varaqlar to'ldirilgach, ularni shu yerda tekshirasiz:", { reply_markup: kb([[btn("📷 Varaqni tekshirish", `sc:${id}`)]]) });
+    }
+    if (kind === "dl") {
+      await answer();
+      return this.send(`📥 <b>${esc(quiz.title)}</b> — qaysi formatda yuklab olasiz?`, { reply_markup: kb([
+        [btn("📕 PDF", `dlf:pdf:${id}`), btn("📘 Word", `dlf:doc:${id}`)],
+        [btn("📗 Excel", `dlf:xls:${id}`), btn("📄 Matn (.txt)", `dlf:txt:${id}`)],
+        [btn("📄 Titul (javob varaqasi)", `ts:${id}`)]]) });
+    }
+    if (kind === "dlf") {
+      await answer("⏳ Tayyorlanmoqda…");
+      await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+      const fmt = val.split(":")[0];
+      const qs = quiz.questions?.length ? quiz.questions : await this.fixedQuestions(quiz);
+      const k = Math.max(2, ...qs.map((q) => q.opts.length));
+      const enc = (t) => new TextEncoder().encode(t);
+      const f = {
+        pdf: async () => [await questionsPdf({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand }), "pdf", "application/pdf",
+          qs.length > 100 ? "📕 PDF (birinchi 100 ta savol). Hammasi kerak bo'lsa — Word yoki Excel." : "📕 PDF — chop etish uchun. Oxirgi sahifada kalit."],
+        doc: async () => [enc(questionsDoc({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand })), "doc", "application/msword", "📘 Word — tahrirlash va chop etish uchun. Oxirgi sahifada kalit."],
+        xls: async () => [enc(questionsCsv({ questions: qs })), "csv", "text/csv", "📗 Excel jadvali: savol, variantlar, javob, izoh."],
+        txt: async () => [enc(questionsTxt({ title: quiz.title, questions: qs })), "txt", "text/plain", "📄 Matn — shu faylni botga qayta yuborsangiz, xuddi shu test tuziladi."],
+      }[fmt];
+      if (!f) return;
+      const [bytes, ext, type, cap] = await f();
+      return this.sendFile(bytes, `${name}.${ext}`, cap, type);
+    }
+    if (kind === "sc") {
+      await answer();
+      const qs = await this.fixedQuestions(quiz);
+      await this.st.put("awaitScan", { id });
+      return this.send(`📷 <b>${esc(quiz.title)}</b> — varaqlarni tekshirish\n\n` +
+        "To'ldirilgan javob varaqasini <b>suratga olib yuboring</b>. Bir nechta varaqni ketma-ket yoki albom qilib yuborish mumkin.\n\n" +
+        "• Varaq butunlay kadrga sig'sin — 4 ta qora burchak ko'rinsin\n• Yorug' joyda, soyasiz, tepadan to'g'ri suratga oling\n" +
+        "• Surat izohiga o'quvchi ismini yozsangiz, natijaga qo'shiladi\n\n" +
+        `🔑 Kalit: ${Math.min(qs.length, 100)} ta savol. Tugatish: /cancel`,
+        { reply_markup: kb([[btn("✅ Tekshirishni tugatish", `scx:${id}`)]]) });
+    }
+    if (kind === "sr") {
+      await answer();
+      const qs = quiz.questions || [];
+      const scans = (await store.listScans(id, uid)).reverse();
+      if (!scans.length) return this.send("Bu test bo'yicha hali varaq tekshirilmagan.", { reply_markup: kb([[btn("📷 Varaqni tekshirish", `sc:${id}`)]]) });
+      const avg = Math.round(scans.reduce((a, x) => a + x.ok / x.total, 0) / scans.length * 100);
+      const best = [...scans].sort((a, b) => b.ok - a.ok).slice(0, 10);
+      const medals = ["🥇", "🥈", "🥉"];
+      await this.send(`📋 <b>${esc(quiz.title)}</b> — ${scans.length} ta varaq · o'rtacha ${avg}%\n\n` +
+        best.map((x, i) => `${medals[i] || i + 1 + "."} ${x.student ? "№" + esc(x.student) + " " : ""}${esc(x.name || "")} — <b>${x.ok}/${x.total}</b> (${Math.round((x.ok / x.total) * 100)}%)`).join("\n"));
+      return this.sendFile(new TextEncoder().encode(resultsCsv(qs, scans)), `${name} - natijalar.csv`,
+        "📊 Excel jadvali: har bir o'quvchi va har bir savolga javobi. «*» — bir nechta javob belgilangan.", "text/csv");
+    }
+  }
+  async scanPhoto(m) {
+    const st = await this.st.get("awaitScan");
+    const store = this.store();
+    const quiz = await store.getQuiz(st.id);
+    if (!quiz || quiz.owner !== m.from.id) { await this.st.delete("awaitScan"); return this.send("❗ Test topilmadi."); }
+    const qs = await this.fixedQuestions(quiz);
+    const n = Math.min(qs.length, 100), k = Math.min(5, Math.max(2, ...qs.slice(0, 100).map((q) => q.opts.length)));
+    const fileId = m.photo ? m.photo[m.photo.length - 1].file_id : m.document.file_id;
+    if (m.document && !/jpe?g/i.test(m.document.mime_type || ""))
+      return this.send("❗ Bu rasm formatini o'qib bo'lmadi. Varaqni oddiy surat (rasm) qilib yuboring.", { reply_to_message_id: m.message_id });
+    await this.tgx("sendChatAction", { chat_id: this.chatId, action: "typing" });
+    let r;
+    try {
+      const img = decodeJpeg(await this.downloadTg(fileId));
+      const g = toGray(img.data, img.width, img.height);
+      r = omrScan(g.px, g.w, g.h, omrLayout(n, k), omrHomography);
+    } catch (e) {
+      console.log("OMR", e);
+      return this.send("⚠️ Suratni o'qib bo'lmadi. Qaytadan suratga olib yuboring.", { reply_to_message_id: m.message_id });
+    }
+    if (r.error)
+      return this.send(`⚠️ Varaq topilmadi: 4 ta qora burchak belgisidan ${r.found || 0} tasi ko'rindi.\n` +
+        "Varaq to'liq kadrda, yorug' va tekis bo'lsin, so'ng qaytadan suratga oling.", { reply_to_message_id: m.message_id });
+    const gr = gradeAnswers(qs, r.answers);
+    const nm = (m.caption || "").trim().slice(0, 60);
+    const scan = await store.addScan({ qid: quiz.id, owner: m.from.id, student: r.id, name: nm, answers: gr.ans, ok: gr.ok, total: gr.n });
+    if (gr.stats.length) await store.addQStats(quiz.id, gr.stats);
+    const pct = Math.round((gr.ok / gr.n) * 100);
+    const A = (a) => (a >= 0 ? LETTERS[a] : a === -2 ? "2+" : "—");
+    const wrong = gr.ans.map((a, i) => (a === qs[i].correct ? null : `${i + 1}: ${A(a)}→${LETTERS[qs[i].correct]}`)).filter(Boolean);
+    const blank = gr.ans.filter((a) => a === -1).length, multi = gr.ans.filter((a) => a === -2).length;
+    return this.send(`✅ ${r.id ? `<b>№${r.id}</b> ` : ""}${nm ? esc(nm) + " " : ""}— <b>${gr.ok}/${gr.n}</b> (${pct}%)\n` +
+      (wrong.length ? `\n❌ Xatolar (berilgan → to'g'ri):\n<code>${wrong.slice(0, 60).join("  ")}</code>` : "\n🏆 Hammasi to'g'ri!") +
+      (blank ? `\n⚪️ Bo'sh: ${blank} ta` : "") + (multi ? `\n⚠️ Bir nechta belgilangan: ${multi} ta` : "") +
+      (r.id ? "" : "\n\n<i>O'quvchi raqami belgilanmagan.</i>") + "\n\nKeyingi varaqni yuboring.",
+      { reply_to_message_id: m.message_id, reply_markup: kb([[btn("🗑 Bu natijani o'chirish", `scd:${scan}`), btn("✅ Tugatish", `scx:${quiz.id}`)]]) });
   }
 
   // ---------- Kanalda so'rovnoma ----------

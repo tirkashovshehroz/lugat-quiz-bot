@@ -25,34 +25,89 @@ export function omrLayout(n, k) {
 
 export const LETTERS = ["A", "B", "C", "D", "E"];
 
-// Standart PDF shriftida yo'q harflarni yaqiniga almashtiramiz (faqat varaq sarlavhasi uchun)
-const plain = (s) => String(s || "")
-  .replace(/[şŞ]/g, (c) => (c === "ş" ? "s" : "S")).replace(/[ğĞ]/g, (c) => (c === "ğ" ? "g" : "G"))
-  .replace(/ı/g, "i").replace(/İ/g, "I").replace(/[ʻʼ‘’`´]/g, "'").replace(/[“”«»]/g, '"').replace(/[—–]/g, "-")
-  .replace(/[^\x20-\x7E -ÿ]/g, "");
+// ---------- PDF matni: turkcha harflar (ş ğ ı İ) ----------
+// Standart Helvetica shriftida bu harflar bor, lekin pdf-lib faqat WinAnsi kodlashni biladi.
+// Shuning uchun ularni kam ishlatiladigan, eni bir xil belgilarga almashtirib, shriftga
+// «Differences» jadvali bilan asl harf shaklini ko'rsatamiz — PDF'da to'g'ri ko'rinadi va qidiriladi.
+const TR = { "ş": "š", "Ş": "Š", "ğ": "ƒ", "Ğ": "Ò", "ı": "·", "İ": "¦" };
+const DIFF = [154, "scedilla", 138, "Scedilla", 131, "gbreve", 210, "Gbreve", 183, "dotlessi", 166, "Idotaccent"];
+export const pdfStr = (s) => String(s ?? "")
+  .replace(/[ʻ‘`´]/g, "‘").replace(/[ʼ’]/g, "’").replace(/[—–]/g, "-").replace(/\t/g, " ")
+  .replace(/[şŞğĞıİ]/g, (c) => TR[c])
+  .replace(/[^\x20-\x7E -ÿ‘’“”•…€™ŠšŒœŽžŸƒ]/g, "?");
+async function fonts(doc, StandardFonts, PDFName) {
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const fix = async () => {
+    for (const f of [font, bold]) {
+      await f.embed();
+      const dict = doc.context.lookup(f.ref);
+      const diff = doc.context.obj(DIFF.map((v) => (typeof v === "number" ? v : PDFName.of(v))));
+      dict.set(PDFName.of("Encoding"), doc.context.obj({ Type: "Encoding", BaseEncoding: "WinAnsiEncoding", Differences: diff }));
+    }
+  };
+  return { font, bold, fix };
+}
+// Matnni berilgan kenglikka sig'diradigan qatorlarga bo'lish
+function wrap(text, f, size, width) {
+  const out = [];
+  for (const para of String(text).split("\n")) {
+    let line = "";
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      let w = word;
+      while (f.widthOfTextAtSize(w, size) > width) { // juda uzun so'z
+        let cut = w.length - 1;
+        while (cut > 1 && f.widthOfTextAtSize(w.slice(0, cut), size) > width) cut--;
+        if (line) { out.push(line); line = ""; }
+        out.push(w.slice(0, cut)); w = w.slice(cut);
+      }
+      const t = line ? line + " " + w : w;
+      if (f.widthOfTextAtSize(t, size) > width) { out.push(line); line = w; } else line = t;
+    }
+    out.push(line);
+  }
+  return out;
+}
+async function embedLogo(doc, logo) {
+  if (!logo?.d) return null;
+  try {
+    const bytes = Uint8Array.from(atob(logo.d), (c) => c.charCodeAt(0));
+    return logo.t === "png" ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
+  } catch { return null; }
+}
 
-export async function answerSheetPdf({ title, n, k, author }) {
-  const { PDFDocument, StandardFonts, rgb } = await import("./pdf-lib.js");
+export async function answerSheetPdf({ title, n, k, author, brand }) {
+  const { PDFDocument, StandardFonts, rgb, PDFName } = await import("./pdf-lib.js");
   const L = omrLayout(n, k);
   const MM = 72 / 25.4;
   const doc = await PDFDocument.create();
+  doc.setTitle(pdfStr(title) + " - javob varaqasi");
   const page = doc.addPage([L.w * MM, L.h * MM]);
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const { font, bold, fix } = await fonts(doc, StandardFonts, PDFName);
   const X = (x) => x * MM, Y = (y) => (L.h - y) * MM;
   const black = rgb(0, 0, 0), grey = rgb(0.45, 0.45, 0.45), light = rgb(0.6, 0.6, 0.6);
-  const text = (s, x, y, size, f = font, color = black) => page.drawText(plain(s), { x: X(x), y: Y(y), size, font: f, color });
+  const text = (s, x, y, size, f = font, color = black) => page.drawText(pdfStr(s), { x: X(x), y: Y(y), size, font: f, color });
   const center = (s, x, y, size, f = font, color = black) => {
-    const t = plain(s);
+    const t = pdfStr(s);
     page.drawText(t, { x: X(x) - f.widthOfTextAtSize(t, size) / 2, y: Y(y) - size * 0.35, size, font: f, color });
   };
+  const fit = (s, f, size, mm) => { let t = pdfStr(s); if (f.widthOfTextAtSize(t, size) <= mm * MM) return t;
+    while (t.length > 3 && f.widthOfTextAtSize(t + "...", size) > mm * MM) t = t.slice(0, -1); return t + "..."; };
   // Burchak belgilari
   for (const [x, y] of L.markers)
     page.drawRectangle({ x: X(x - L.marker / 2), y: Y(y + L.marker / 2), width: L.marker * MM, height: L.marker * MM, color: black });
+  // O'quv markazi: logotip va nomi (burchak belgilari orasida, skanerga xalal bermaydi)
+  const img = await embedLogo(doc, brand?.logo);
+  let tx = 24;
+  if (img) {
+    const hmm = 11, wmm = Math.min(30, (img.width / img.height) * hmm);
+    const hh = Math.min(hmm, (img.height / img.width) * wmm);
+    page.drawImage(img, { x: X(24), y: Y(10 + hh), width: wmm * MM, height: hh * MM });
+    tx = 24 + wmm + 3;
+  }
+  if (brand?.name) page.drawText(fit(brand.name, bold, 11, 176 - tx), { x: X(tx), y: Y(16.5), size: 11, font: bold, color: rgb(0.15, 0.3, 0.6) });
   // Sarlavha
-  let t = plain(title);
-  while (bold.widthOfTextAtSize(t, 14) > 150 * MM && t.length > 3) t = t.slice(0, -2);
-  text(t === plain(title) ? t : t + "...", 24, 26, 14, bold);
+  page.drawText(fit(title, bold, 13, 150), { x: X(24), y: Y(27), size: 13, font: bold });
   text("JAVOB VARAQASI", 24, 32.5, 8, font, grey);
   text("Ism-familiya:", 24, 42, 10);
   page.drawLine({ start: { x: X(24), y: Y(52) }, end: { x: X(92), y: Y(52) }, thickness: 0.6, color: grey });
@@ -81,25 +136,147 @@ export async function answerSheetPdf({ title, n, k, author }) {
     });
   });
   text(`LingoUP bot${author ? "  ·  " + author : ""}  ·  ${L.n} ta savol`, 24, 290, 7, font, grey);
+  await fix();
+  return doc.save();
+}
+
+// Savollar varag'i (PDF): sarlavha, savollar va variantlar; oxirgi sahifada — javoblar kaliti
+export async function questionsPdf({ title, description, questions, k, author, brand, withKey = true }) {
+  const { PDFDocument, StandardFonts, rgb, PDFName } = await import("./pdf-lib.js");
+  const MM = 72 / 25.4, W = 210 * MM, H = 297 * MM, M = 18 * MM, CW = W - 2 * M;
+  const doc = await PDFDocument.create();
+  doc.setTitle(pdfStr(title));
+  const { font, bold, fix } = await fonts(doc, StandardFonts, PDFName);
+  const img = await embedLogo(doc, brand?.logo);
+  const grey = rgb(0.45, 0.45, 0.45);
+  let page, y, pageNo = 0;
+  const newPage = () => {
+    page = doc.addPage([W, H]); pageNo++; y = H - M;
+    page.drawText(pdfStr(`${brand?.name ? brand.name + "  ·  " : ""}${title}`).slice(0, 110), { x: M, y: 10 * MM, size: 7, font, color: grey });
+    page.drawText(String(pageNo), { x: W - M - 6, y: 10 * MM, size: 8, font, color: grey });
+  };
+  const need = (h) => { if (y - h < 18 * MM) newPage(); };
+  const lines = (txt, f, size, x, width, color) => {
+    for (const ln of wrap(pdfStr(txt), f, size, width)) { need(size * 1.35); page.drawText(ln, { x, y: y - size, size, font: f, color }); y -= size * 1.35; }
+  };
+  newPage();
+  // Shapka
+  if (img || brand?.name) {
+    let tx = M;
+    if (img) { const h = 12 * MM, w = Math.min(34 * MM, (img.width / img.height) * h); page.drawImage(img, { x: M, y: y - h, width: w, height: (img.height / img.width) * w > h ? h : (img.height / img.width) * w }); tx = M + w + 8; }
+    if (brand?.name) page.drawText(pdfStr(brand.name).slice(0, 80), { x: tx, y: y - 9 * MM, size: 12, font: bold, color: rgb(0.15, 0.3, 0.6) });
+    y -= 16 * MM;
+  }
+  lines(title, bold, 15, M, CW);
+  if (description) lines(description, font, 10, M, CW, grey);
+  y -= 4;
+  lines("Ism-familiya: ________________________________     Sana: ______________", font, 10, M, CW);
+  y -= 8;
+  page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.5, color: grey });
+  y -= 10;
+  const qs = questions.slice(0, 100);
+  qs.forEach((q, i) => {
+    const num = `${i + 1}. `, nw = bold.widthOfTextAtSize(num, 11);
+    const ql = wrap(pdfStr(q.q || "(rasmli savol)"), font, 11, CW - nw);
+    const opts = q.opts.slice(0, k).map((o, j) => `${LETTERS[j]}) ${o}`);
+    const ol = opts.flatMap((o) => wrap(pdfStr(o), font, 10.5, CW - 14));
+    need(ql.length * 15 + Math.min(ol.length, 2) * 14 + 8);
+    page.drawText(num, { x: M, y: y - 11, size: 11, font: bold });
+    for (const ln of ql) { need(15); page.drawText(ln, { x: M + nw, y: y - 11, size: 11, font }); y -= 15; }
+    // Qisqa variantlar bir qatorga, uzunlari alohida qatorlarga
+    const short = opts.every((o) => font.widthOfTextAtSize(pdfStr(o), 10.5) < CW / opts.length - 10);
+    if (short) {
+      need(15);
+      opts.forEach((o, j) => page.drawText(pdfStr(o), { x: M + 12 + (j * (CW - 12)) / opts.length, y: y - 10.5, size: 10.5, font }));
+      y -= 15;
+    } else for (const o of opts) lines(o, font, 10.5, M + 12, CW - 14);
+    y -= 7;
+  });
+  if (withKey) {
+    newPage();
+    lines("Javoblar kaliti (o'qituvchi uchun)", bold, 14, M, CW);
+    y -= 6;
+    const per = 5, colW = CW / per;
+    qs.forEach((q, i) => {
+      if (i % per === 0) { need(16); y -= 16; }
+      page.drawText(pdfStr(`${i + 1} - ${LETTERS[q.correct] || "?"}`), { x: M + (i % per) * colW, y, size: 11, font: i % per ? font : font });
+    });
+    y -= 20;
+    if (author) lines(`${author} · LingoUP bot`, font, 9, M, CW, grey);
+  }
+  await fix();
   return doc.save();
 }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-// Savollar varag'i — Word ochadigan .doc (HTML) fayl: barcha harflar (ş, ğ, ı, oʻ) to'g'ri chiqadi
-export function questionsDoc({ title, description, questions, k, author }) {
-  const qs = questions.slice(0, 100).map((q, i) =>
+// Savollar varag'i — Word ochadigan .doc (HTML) fayl
+export function questionsDoc({ title, description, questions, k, author, brand }) {
+  const qs = questions.slice(0, 1000).map((q, i) =>
     `<p class=q><b>${i + 1}.</b> ${esc(q.q)}</p><p class=o>` +
-    q.opts.slice(0, k).map((o, j) => `<span>${LETTERS[j]}) ${esc(o)}</span>`).join("&nbsp;&nbsp;&nbsp;&nbsp; ") + "</p>").join("");
-  const key = questions.slice(0, 100).map((q, i) => `${i + 1}-${LETTERS[q.correct] || "?"}`).join(", ");
+    q.opts.slice(0, Math.max(k, q.opts.length)).map((o, j) => `<span>${"ABCDEFGHIJ"[j]}) ${esc(o)}</span>`).join("&nbsp;&nbsp;&nbsp;&nbsp; ") + "</p>").join("");
+  const key = questions.slice(0, 1000).map((q, i) => `${i + 1}-${"ABCDEFGHIJ"[q.correct] || "?"}`).join(", ");
   return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8">
 <title>${esc(title)}</title><style>body{font-family:Calibri,Arial,sans-serif;font-size:12pt}h1{font-size:16pt;margin:0}
-.q{margin:10pt 0 2pt}.o{margin:0 0 0 14pt}.key{page-break-before:always}.muted{color:#666;font-size:10pt}</style></head><body>
+.q{margin:10pt 0 2pt}.o{margin:0 0 0 14pt}.key{page-break-before:always}.muted{color:#666;font-size:10pt}.brand{color:#26559a;font-weight:bold;font-size:13pt}</style></head><body>
+${brand?.logo ? `<img src="data:image/${brand.logo.t === "png" ? "png" : "jpeg"};base64,${brand.logo.d}" height=48> ` : ""}${brand?.name ? `<p class=brand>${esc(brand.name)}</p>` : ""}
 <h1>${esc(title)}</h1>${description ? `<p class=muted>${esc(description)}</p>` : ""}
-<p class=muted>Ism-familiya: ______________________ &nbsp;&nbsp; Javoblarni javob varaqasidagi doirachalarni bo'yab belgilang.</p>
+<p class=muted>Ism-familiya: ______________________ &nbsp;&nbsp; Sana: ____________</p>
 ${qs}
 <div class=key><h1>Javoblar kaliti (o'qituvchi uchun)</h1><p>${key}</p><p class=muted>${esc(author || "")} · LingoUP bot</p></div>
 </body></html>`;
+}
+
+// Botga qayta yuklasa bo'ladigan matn (.txt): savol, A) B) C) variantlar, «Javob:», «Izoh:»
+export function questionsTxt({ title, questions }) {
+  return `${title}\n\n` + questions.map((q, i) => `${i + 1}. ${q.q}\n` + q.opts.map((o, j) => `${"ABCDEFGHIJ"[j]}) ${o}`).join("\n") +
+    `\nJavob: ${"ABCDEFGHIJ"[q.correct]}` + (q.exp ? `\nIzoh: ${q.exp}` : "")).join("\n\n") + "\n";
+}
+
+// Excel ochadigan jadval (.csv): № | Savol | A..E | Javob | Izoh
+const cell = (v) => { const t = String(v ?? ""); return /[;"\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+export function questionsCsv({ questions }) {
+  const m = Math.max(2, ...questions.map((q) => q.opts.length));
+  const L = "ABCDEFGHIJ".slice(0, m).split("");
+  const rows = [["№", "Savol", ...L, "Javob", "Izoh"].join(";")];
+  questions.forEach((q, i) => rows.push([i + 1, q.q, ...L.map((_, j) => q.opts[j] ?? ""), L[q.correct], q.exp || ""].map(cell).join(";")));
+  return "﻿sep=;\r\n" + rows.join("\r\n");
+}
+
+// Skaner natijalari jadvali (.csv)
+export function resultsCsv(questions, scans) {
+  const n = Math.min(questions.length, 100);
+  const A = (a) => (a >= 0 ? LETTERS[a] : a === -2 ? "*" : "");
+  const lines = ["sep=;", ["#", "Raqam", "Ism", "To'g'ri", "Jami", "%", "Sana", ...Array.from({ length: n }, (_, i) => `${i + 1}`)].join(";"),
+    ["", "", "KALIT", "", "", "", "", ...questions.slice(0, n).map((q) => A(q.correct))].map(cell).join(";")];
+  scans.forEach((s, i) => lines.push([i + 1, s.student, s.name, s.ok, s.total, Math.round((s.ok / s.total) * 100),
+    new Date(s.created + 5 * 3600e3).toISOString().slice(0, 16).replace("T", " "), ...s.answers.map(A)].map(cell).join(";")));
+  return "﻿" + lines.join("\r\n");
+}
+
+// Skanerlangan javoblarni baholash
+export function gradeAnswers(questions, answers) {
+  const n = Math.min(questions.length, 100);
+  const ans = (Array.isArray(answers) ? answers : []).slice(0, n).map((a) => (Number.isInteger(a) && a >= -2 && a < 5 ? a : -1));
+  while (ans.length < n) ans.push(-1);
+  const ok = ans.filter((a, i) => a === questions[i].correct).length;
+  const stats = ans.map((a, i) => a !== -1 && { k: String(questions[i].pair ? questions[i].pair[0] + "|" + questions[i].pair[1] : questions[i].q).slice(0, 300),
+    q: String(questions[i].q || "").slice(0, 200), ans: String(questions[i].opts[questions[i].correct] ?? "").slice(0, 100), wrong: a === questions[i].correct ? 0 : 1, total: 1 }).filter(Boolean);
+  return { ans, ok, n, stats };
+}
+
+// Kulrang piksellar (RGBA dan), katta suratni kichraytirib
+export function toGray(rgba, w, h, max = 1400) {
+  const sc = Math.min(1, max / Math.max(w, h));
+  const W = Math.round(w * sc), H = Math.round(h * sc), px = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const sy = Math.min(h - 1, Math.floor(y / sc));
+    for (let x = 0; x < W; x++) {
+      const i = (sy * w + Math.min(w - 1, Math.floor(x / sc))) * 4;
+      px[y * W + x] = (rgba[i] * 299 + rgba[i + 1] * 587 + rgba[i + 2] * 114) / 1000;
+    }
+  }
+  return { px, w: W, h: H };
 }
 
 // ---------- Skaner (brauzerda ishlaydi; funksiyalar o'zi yetarli — tashqi o'zgaruvchisiz) ----------
@@ -146,42 +323,52 @@ export function omrScan(px, w, h, L, H) {
     if (v > best) { best = v; thr = i; }
   }
   thr = Math.min(thr, 140);
-  // Qora dog'lar (bog'langan sohalar)
   const lab = new Int32Array(w * h), stack = new Int32Array(w * h);
-  const comps = [];
-  for (let s = 0; s < w * h; s++) {
-    if (lab[s] || px[s] >= thr) continue;
-    const id = comps.length + 1;
-    let sp = 0, area = 0, sx = 0, sy = 0, x0 = w, x1 = 0, y0 = h, y1 = 0;
-    stack[sp++] = s; lab[s] = id;
-    while (sp) {
-      const p = stack[--sp], x = p % w, y = (p - x) / w;
-      area++; sx += x; sy += y;
-      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
-      if (x > 0 && !lab[p - 1] && px[p - 1] < thr) { lab[p - 1] = id; stack[sp++] = p - 1; }
-      if (x < w - 1 && !lab[p + 1] && px[p + 1] < thr) { lab[p + 1] = id; stack[sp++] = p + 1; }
-      if (y > 0 && !lab[p - w] && px[p - w] < thr) { lab[p - w] = id; stack[sp++] = p - w; }
-      if (y < h - 1 && !lab[p + w] && px[p + w] < thr) { lab[p + w] = id; stack[sp++] = p + w; }
-    }
-    comps.push({ area, cx: sx / area, cy: sy / area, bw: x1 - x0 + 1, bh: y1 - y0 + 1 });
-  }
   const S = Math.max(w, h);
-  const cand = comps.filter((c) => c.bw > S * 0.012 && c.bh > S * 0.012 && c.bw < S * 0.09 && c.bh < S * 0.09 &&
-    c.bw / c.bh > 0.6 && c.bw / c.bh < 1.6 && c.area / (c.bw * c.bh) > 0.82);
-  const corners = [[0, 0], [w, 0], [0, h], [w, h]];
-  const pick = [];
-  for (const [qx, qy] of corners) {
-    let bestC = null, bd = Infinity;
-    for (const c of cand) {
-      if ((qx ? c.cx < w / 2 : c.cx > w / 2) || (qy ? c.cy < h / 2 : c.cy > h / 2)) continue;
-      const d = Math.hypot(c.cx - qx, c.cy - qy);
-      if (d < bd) { bd = d; bestC = c; }
+  // Berilgan chegarada qora dog'larni topib, 4 ta burchak belgisini tanlaydi
+  const findMarkers = (t) => {
+    lab.fill(0);
+    const comps = [];
+    for (let s = 0; s < w * h; s++) {
+      if (lab[s] || px[s] >= t) continue;
+      const id = comps.length + 1;
+      let sp = 0, area = 0, sx = 0, sy = 0, x0 = w, x1 = 0, y0 = h, y1 = 0;
+      stack[sp++] = s; lab[s] = id;
+      while (sp) {
+        const p = stack[--sp], x = p % w, y = (p - x) / w;
+        area++; sx += x; sy += y;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x > 0 && !lab[p - 1] && px[p - 1] < t) { lab[p - 1] = id; stack[sp++] = p - 1; }
+        if (x < w - 1 && !lab[p + 1] && px[p + 1] < t) { lab[p + 1] = id; stack[sp++] = p + 1; }
+        if (y > 0 && !lab[p - w] && px[p - w] < t) { lab[p - w] = id; stack[sp++] = p - w; }
+        if (y < h - 1 && !lab[p + w] && px[p + w] < t) { lab[p + w] = id; stack[sp++] = p + w; }
+      }
+      comps.push({ area, cx: sx / area, cy: sy / area, bw: x1 - x0 + 1, bh: y1 - y0 + 1 });
     }
-    if (!bestC) return { error: "markers", found: pick.length };
-    pick.push(bestC);
+    const cand = comps.filter((c) => c.bw > S * 0.01 && c.bh > S * 0.01 && c.bw < S * 0.09 && c.bh < S * 0.09 &&
+      c.bw / c.bh > 0.6 && c.bw / c.bh < 1.6 && c.area / (c.bw * c.bh) > 0.6);
+    const pick = [];
+    for (const [qx, qy] of [[0, 0], [w, 0], [0, h], [w, h]]) {
+      let bestC = null, bd = Infinity;
+      for (const c of cand) {
+        if ((qx ? c.cx < w / 2 : c.cx > w / 2) || (qy ? c.cy < h / 2 : c.cy > h / 2)) continue;
+        const d = Math.hypot(c.cx - qx, c.cy - qy);
+        if (d < bd) { bd = d; bestC = c; }
+      }
+      if (!bestC) return { found: pick.length };
+      pick.push(bestC);
+    }
+    const sizes = pick.map((c) => Math.sqrt(c.area));
+    if (Math.max(...sizes) > 2.2 * Math.min(...sizes)) return { found: 3 };
+    return { pick };
+  };
+  let pick = null, found = 0;
+  for (const t of [thr, thr * 0.75, thr * 0.55, thr * 0.4]) {
+    const r = findMarkers(t);
+    if (r.pick) { pick = r.pick; break; }
+    found = Math.max(found, r.found);
   }
-  const sizes = pick.map((c) => Math.sqrt(c.area));
-  if (Math.max(...sizes) > 2.2 * Math.min(...sizes)) return { error: "markers", found: 3 };
+  if (!pick) return { error: "markers", found };
   const map = H(L.markers, pick.map((c) => [c.cx, c.cy]));
   if (!map) return { error: "markers", found: 4 };
   const at = (x, y) => {
