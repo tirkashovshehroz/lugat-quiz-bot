@@ -279,6 +279,8 @@ export class Store extends DurableObject {
     // O'qituvchi hisoboti: guruhda o'tkazilgan testlar
     this.sql.exec(`CREATE TABLE IF NOT EXISTS games(id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER, chatTitle TEXT, qid TEXT, title TEXT,
       starter INTEGER, created INTEGER, asked INTEGER)`);
+    // Har bir test savollari bo'yicha xato statistikasi (Mini App uchun)
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS qstats(qid TEXT, k TEXT, q TEXT, ans TEXT, wrong INTEGER, total INTEGER, PRIMARY KEY(qid, k))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS game_scores(game INTEGER, uid INTEGER, name TEXT, ok INTEGER, bad INTEGER, secs REAL, PRIMARY KEY(game, uid))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS game_words(game INTEGER, q TEXT, ans TEXT, wrong INTEGER, total INTEGER)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS review_done(uid INTEGER PRIMARY KEY, n INTEGER)`);
@@ -419,6 +421,27 @@ export class Store extends DurableObject {
     const better = this.sql.exec("SELECT COUNT(*) AS n FROM results WHERE qid=? AND (ok>? OR (ok=? AND secs<?))",
       qid, me.ok, me.ok, me.secs).toArray()[0].n;
     return { place: better + 1, total: this.takers(qid) };
+  }
+  addQStats(qid, rows) {
+    for (const r of rows)
+      this.sql.exec(`INSERT INTO qstats VALUES(?,?,?,?,?,?) ON CONFLICT(qid,k) DO UPDATE SET wrong=wrong+excluded.wrong, total=total+excluded.total, q=excluded.q, ans=excluded.ans`,
+        qid, r.k, r.q, r.ans, r.wrong, r.total);
+  }
+  quizStats(qid) {
+    const res = this.sql.exec("SELECT name, ok, total, secs, created FROM results WHERE qid=? ORDER BY ok*1.0/total DESC, secs ASC", qid).toArray();
+    const pct = (r) => (r.total ? Math.round((r.ok / r.total) * 100) : 0);
+    const buckets = [0, 0, 0, 0];
+    for (const r of res) { const p = pct(r); buckets[p >= 90 ? 3 : p >= 70 ? 2 : p >= 50 ? 1 : 0]++; }
+    const avg = res.length ? Math.round(res.reduce((a, r) => a + pct(r), 0) / res.length) : 0;
+    const avgSecs = res.length ? Math.round(res.reduce((a, r) => a + (r.secs || 0), 0) / res.length) : 0;
+    const week = Date.now() - 7 * 86400e3;
+    const hard = this.sql.exec("SELECT q, ans, wrong, total FROM qstats WHERE qid=? AND total>0 AND wrong>0 ORDER BY wrong*1.0/total DESC, wrong DESC LIMIT 10", qid).toArray();
+    const games = this.sql.exec(`SELECT g.chatTitle, g.created, g.asked, (SELECT COUNT(*) FROM game_scores s WHERE s.game=g.id) AS players
+      FROM games g WHERE g.qid=? ORDER BY g.created DESC LIMIT 5`, qid).toArray();
+    const nGames = this.sql.exec("SELECT COUNT(*) AS n FROM games WHERE qid=?", qid).toArray()[0].n;
+    return { takers: res.length, week: res.filter((r) => r.created >= week).length, avg, avgSecs, buckets,
+      top: res.slice(0, 10).map((r) => ({ name: r.name, ok: r.ok, total: r.total, secs: Math.round(r.secs || 0) })),
+      hard, games, nGames };
   }
   takers(qid) {
     return this.sql.exec("SELECT COUNT(*) AS n FROM results WHERE qid=?", qid).toArray()[0].n;
@@ -1331,7 +1354,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-18 · Mini App</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-18 · Mini App 2</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2741,6 +2764,11 @@ export class Chat extends DurableObject {
     await this.st.setAlarm(Date.now() + 1000);
     return { ok: true };
   }
+  async getCpost() {
+    const cp = await this.st.get("cpost");
+    return cp ? { qid: cp.qid, title: cp.title, chatTitle: cp.chatTitle, sent: cp.idx + 1, total: cp.questions.length,
+      interval: cp.interval, stopped: !!cp.stopped, owner: cp.owner } : null;
+  }
   async stopCpost(uid) {
     const cp = await this.st.get("cpost");
     if (!cp || (cp.owner !== uid && !this.isAuthor({ id: uid }))) return false;
@@ -3018,6 +3046,18 @@ export class Chat extends DurableObject {
       }
     }
     // Takrorlash ro'yxatini yangilash (shu test bo'yicha, shu o'quvchi uchun)
+    // Savollar bo'yicha xato statistikasi
+    if (s.record && s.asked) {
+      const rows = [];
+      const wk = new Set(s.wrong.map((w) => w[0] + "|" + w[1]));
+      for (let i = 0; i < s.asked && i < s.questions.length; i++) {
+        const q = s.questions[i];
+        const k = String(q.pair ? q.pair[0] + "|" + q.pair[1] : q.q).slice(0, 300);
+        const [wrong, total] = s.isGroup ? s.qstat?.[i] || [0, 0] : [wk.has(q.pair ? q.pair[0] + "|" + q.pair[1] : "") ? 1 : 0, 1];
+        if (total) rows.push({ k, q: String(q.q || "").slice(0, 200), ans: String(q.opts?.[q.correct] ?? "").slice(0, 100), wrong, total });
+      }
+      if (rows.length) await store.addQStats(s.qid, rows);
+    }
     if (s.asked) {
       const wrongQs0 = s.questions.filter((q) => s.wrong.some((w) => w[0] === q.pair[0] && w[1] === q.pair[1]));
       const rv = await store.reviewUpdate(+uid, wrongQs0, s.right || [], !!s.review, s.title.replace(/ — (xatolar|takrorlash)$/, ""));
@@ -3321,7 +3361,8 @@ export default {
       return new Response("ok");
     }
     if (url.pathname === "/app" || url.pathname.startsWith("/api/"))
-      return handleApp(req, env, url, env.STORE.get(env.STORE.idFromName("db")), buildQuestions);
+      return handleApp(req, env, url, env.STORE.get(env.STORE.idFromName("db")),
+        { buildQuestions, prepare, quizQuestions, botName, chat: (id) => env.CHAT.get(env.CHAT.idFromName(String(id))) });
     return new Response("LingoUP bot ishlayapti ✅", { headers: { "content-type": "text/plain; charset=utf-8" } });
   },
 };

@@ -68,7 +68,17 @@ function cleanQuestions(list) {
   return { questions: out };
 }
 
-export async function handleApp(req, env, url, store, buildQuestions) {
+const tgApi = (env, method, body) =>
+  fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, { method: "POST",
+    headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()).catch(() => ({ ok: false }));
+const CP_STEPS = [0, 60, 300, 900, 1800, 3600];
+
+async function savedChannels(store, uid) {
+  try { return JSON.parse((await store.getSetting("uch:" + uid)) || "[]"); } catch { return []; }
+}
+
+export async function handleApp(req, env, url, store, h) {
+  const { buildQuestions } = h;
   if (url.pathname === "/app") {
     return new Response(APP_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
   }
@@ -80,6 +90,7 @@ export async function handleApp(req, env, url, store, buildQuestions) {
   const path = url.pathname.slice(4); // "/api" dan keyingi qism
 
   if (path === "/me" && req.method === "GET") return json({ id: uid, name: user.first_name || "", author });
+  if (path === "/channels" && req.method === "GET") return json({ items: await savedChannels(store, uid) });
 
   if (path === "/quizzes" && req.method === "GET") {
     const q = str(url.searchParams.get("q"), 60);
@@ -120,6 +131,56 @@ export async function handleApp(req, env, url, store, buildQuestions) {
     }
     await store.saveEdits(id, uid, { title, description, timer, shuffle, questions: c.questions });
     return json({ ok: true, count: c.questions.length });
+  }
+
+  // ---------- Statistika ----------
+  if (path === "/stats" && req.method === "GET") return json(await store.quizStats(id));
+
+  // ---------- Kanalda so'rovnoma ----------
+  if (path === "/cpcheck" && req.method === "POST") {
+    let ch = str(body.channel, 100).replace(/^https?:\/\/t\.me\//i, "@").replace(/^t\.me\//i, "@");
+    if (/^[A-Za-z][A-Za-z0-9_]{3,}$/.test(ch)) ch = "@" + ch;
+    if (!/^@[A-Za-z0-9_]{4,}$/.test(ch) && !/^-100\d+$/.test(ch)) return json({ error: "Kanal manzilini @kanalim ko'rinishida yozing" }, 400);
+    const info = await tgApi(env, "getChat", { chat_id: ch });
+    if (!info.ok || info.result.type !== "channel") return json({ error: "Kanal topilmadi. Manzilni va bot kanalga admin qilinganini tekshiring." }, 400);
+    const chat = info.result;
+    const me = (await tgApi(env, "getMe", {})).result;
+    const bm = await tgApi(env, "getChatMember", { chat_id: chat.id, user_id: me?.id });
+    if (!bm.ok || bm.result.status !== "administrator" || !bm.result.can_post_messages)
+      return json({ error: `Bot «${chat.title}» kanalida admin emas yoki «Xabar joylash» huquqi yo'q` }, 400);
+    const um = await tgApi(env, "getChatMember", { chat_id: chat.id, user_id: uid });
+    if (!um.ok || !["creator", "administrator"].includes(um.result.status))
+      return json({ error: "Faqat o'zingiz admin bo'lgan kanalga joylay olasiz" }, 403);
+    const list = (await savedChannels(store, uid)).filter((c) => c.id !== chat.id);
+    list.unshift({ id: chat.id, title: chat.title, username: chat.username || "" });
+    await store.setSetting("uch:" + uid, JSON.stringify(list.slice(0, 10)));
+    return json({ ok: true, channel: list[0] });
+  }
+  if (path === "/cpstatus" && req.method === "GET") {
+    const chat = String(url.searchParams.get("chat") || "");
+    if (!(await savedChannels(store, uid)).some((c) => String(c.id) === chat)) return json({ job: null });
+    const job = await h.chat(chat).getCpost();
+    return json({ job: job && job.owner === uid ? job : job ? { busy: true } : null });
+  }
+  if (path === "/cpstart" && req.method === "POST") {
+    const ch = (await savedChannels(store, uid)).find((c) => String(c.id) === String(body.chat));
+    if (!ch) return json({ error: "Avval kanalni tekshiring" }, 400);
+    if (quiz.status === "pending") return json({ error: "Test tekshiruvda — hozircha kanalga joylab bo'lmaydi" }, 400);
+    const um = await tgApi(env, "getChatMember", { chat_id: ch.id, user_id: uid });
+    if (!um.ok || !["creator", "administrator"].includes(um.result.status)) return json({ error: "Siz bu kanalda admin emassiz" }, 403);
+    const interval = CP_STEPS.includes(Number(body.interval)) ? Number(body.interval) : 0;
+    let questions = h.prepare(h.quizQuestions(quiz), quiz.shuffle || "all");
+    const limit = parseInt(body.limit, 10);
+    if (limit > 0) questions = questions.slice(0, limit);
+    if (!questions.length) return json({ error: "Savol tuzib bo'lmadi" }, 400);
+    const r = await h.chat(ch.id).startCpost({ chat: ch.id, chatTitle: ch.title, owner: uid, ownerChat: uid, qid: quiz.id, title: quiz.title,
+      description: quiz.description || "", questions, idx: -1, interval, bot: await h.botName(env), started: Date.now() });
+    if (!r.ok) return json({ error: "Bu kanalda hozir boshqa so'rovnoma joylanmoqda" }, 409);
+    return json({ ok: true, total: questions.length });
+  }
+  if (path === "/cpstop" && req.method === "POST") {
+    const ok = await h.chat(String(body.chat)).stopCpost(uid);
+    return json({ ok });
   }
 
   if (path === "/delete" && req.method === "POST") {
