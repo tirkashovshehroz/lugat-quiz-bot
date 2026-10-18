@@ -82,6 +82,15 @@ export async function handleApp(req, env, url, store, h) {
   if (url.pathname === "/app") {
     return new Response(APP_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
   }
+  // Savol rasmi (Telegram file_id orqali) — <img> sarlavha yubora olmagani uchun imzosiz
+  if (url.pathname === "/api/img") {
+    const f = String(url.searchParams.get("f") || "");
+    if (!/^[\w-]{20,200}$/.test(f)) return new Response("bad", { status: 400 });
+    const info = await tgApi(env, "getFile", { file_id: f });
+    if (!info.ok) return new Response("not found", { status: 404 });
+    const r = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${info.result.file_path}`);
+    return new Response(r.body, { headers: { "content-type": r.headers.get("content-type") || "image/jpeg", "cache-control": "public, max-age=86400" } });
+  }
   // --- API ---
   const user = await verifyInit(req.headers.get("X-Init-Data"), env.BOT_TOKEN);
   if (!user?.id) return json({ error: "Telegram orqali oching" }, 401);
@@ -102,6 +111,39 @@ export async function handleApp(req, env, url, store, h) {
   }
 
   const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+
+  // ---------- O'quvchi tomoni: test yechish ----------
+  if (path === "/catalog" && req.method === "GET") {
+    const authorId = await store.getSetting("authorId");
+    const pub = authorId ? await store.catalog(+authorId, 0, 100) : [];
+    const mine = String(uid) === String(authorId) ? [] : (await store.listQuizzes(uid, 0, 50)).filter((r) => r.status !== "pending");
+    const pick = (r) => ({ id: r.id, title: r.title, count: r.count });
+    return json({ author: env.AUTHOR || "@Shehroz_hoca", pub: pub.map(pick), mine: mine.map(pick) });
+  }
+  if (path === "/info" && req.method === "GET") {
+    const q = await store.getQuiz(String(url.searchParams.get("id") || ""));
+    if (!q || (q.status === "pending" && q.owner !== uid)) return json({ error: "Test topilmadi yoki o'chirilgan" }, 404);
+    const best = await store.top(q.id, 3);
+    return json({ id: q.id, title: q.title, description: q.description || "", timer: q.timer || 30,
+      count: q.questions?.length || q.count, takers: await store.takers(q.id), owner: q.owner === uid,
+      top: best.map((r) => ({ name: r.name, ok: r.ok, total: r.total })) });
+  }
+  if (path === "/play" && req.method === "POST") {
+    const q = await store.getQuiz(String(body.id || ""));
+    if (!q || (q.status === "pending" && q.owner !== uid)) return json({ error: "Test topilmadi yoki o'chirilgan" }, 404);
+    const r = await h.chat(uid).appStart(uid, q, !!body.retry);
+    return json(r, r.error ? 400 : 200);
+  }
+  if (path === "/answer" && req.method === "POST") {
+    const r = await h.chat(uid).appAnswer(Number(body.i), Number(body.c));
+    return json(r, r.error ? 400 : 200);
+  }
+  if (path === "/finish" && req.method === "POST") {
+    const name = [user.first_name, user.last_name].filter(Boolean).join(" ").slice(0, 60);
+    const r = await h.chat(uid).appFinish(uid, name);
+    return json(r, r.error ? 400 : 200);
+  }
+
   const id = String(url.searchParams.get("id") || body.id || "").slice(0, 40);
   if (!id) return json({ error: "id kerak" }, 400);
   const quiz = await store.getQuiz(id);

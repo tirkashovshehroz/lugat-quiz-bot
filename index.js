@@ -649,10 +649,9 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
   if (owner && quiz.status !== "pending") rows.push([btn("🗳 Kanalda so'rovnoma qilish", `cp:${quiz.id}`)]);
-  if (owner) {
-    const app = await env.STORE.get(env.STORE.idFromName("db")).getSetting("appUrl");
-    if (app) rows.push([{ text: "📱 Ilovada tahrirlash", web_app: { url: `${app}#q=${quiz.id}` } }]);
-  }
+  const app = await env.STORE.get(env.STORE.idFromName("db")).getSetting("appUrl");
+  if (app) rows.splice(1, 0, [{ text: "📱 Ilovada yechish", web_app: { url: `${app}#p=${quiz.id}` } }]);
+  if (owner && app) rows.push([{ text: "📱 Ilovada tahrirlash", web_app: { url: `${app}#q=${quiz.id}` } }]);
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
   else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : quiz.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
   return { text, reply_markup: kb(rows) };
@@ -1354,7 +1353,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-18 · Mini App 2</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · Mini App 3</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2764,6 +2763,65 @@ export class Chat extends DurableObject {
     await this.st.setAlarm(Date.now() + 1000);
     return { ok: true };
   }
+  // ---------- Mini App: o'quvchi testni ilovada yechadi ----------
+  // Javoblar serverda tekshiriladi: to'g'ri javob o'quvchiga savol yuborilganda ko'rsatilmaydi
+  async appStart(uid, quiz, retry) {
+    if (await this.st.get("banned")) return { error: "🚫 Siz botdan bloklangansiz" };
+    if (!(await this.isMember(uid))) return { error: "join", channels: channelsOf(this.env).map((c) => ({ name: c.name, link: c.link })) };
+    let questions, record = true, title = quiz.title;
+    if (retry) {
+      const r = await this.st.get("appRetry");
+      if (!r || r.qid !== quiz.id || !r.questions.length) return { error: "Qayta ishlash uchun xato savol yo'q" };
+      questions = prepare(r.questions, "all"); record = false; title = quiz.title + " — xatolar";
+    } else questions = prepare(quizQuestions(quiz), quiz.shuffle || "all");
+    if (!questions.length) return { error: "Savol tuzib bo'lmadi" };
+    const timer = quiz.timer || 30;
+    await this.st.put("app", { qid: quiz.id, title, questions, ans: [], started: Date.now(), timer, record, owner: quiz.owner });
+    return { title, timer, total: questions.length, record,
+      questions: questions.map((q) => ({ q: q.q, opts: q.opts, img: q.img || undefined })) };
+  }
+  async appAnswer(i, choice) {
+    const a = await this.st.get("app");
+    if (!a) return { error: "Sessiya topilmadi — testni qaytadan boshlang" };
+    const q = a.questions[i];
+    if (!q) return { error: "Savol topilmadi" };
+    if (a.ans[i] == null) {
+      const c = Number.isInteger(choice) && choice >= 0 && choice < q.opts.length ? choice : -1;
+      const now = Date.now();
+      a.ans[i] = { c, ok: c === q.correct, t: Math.min(a.timer, Math.max(0, (now - (a.last || a.started)) / 1000)) };
+      a.last = now;
+      await this.st.put("app", a);
+    }
+    return { right: q.correct, ok: a.ans[i].ok, exp: q.exp || "" };
+  }
+  async appFinish(uid, name) {
+    const a = await this.st.get("app");
+    if (!a) return { error: "Sessiya topilmadi" };
+    await this.st.delete("app");
+    const asked = a.ans.filter(Boolean).length;
+    const ok = a.ans.filter((x) => x?.ok).length;
+    const missed = a.ans.filter((x) => x && x.c === -1).length;
+    const secs = a.ans.reduce((s, x) => s + (x?.t || 0), 0);
+    const wrongQs = a.questions.filter((q, i) => a.ans[i] && !a.ans[i].ok);
+    const rightPairs = a.questions.filter((q, i) => a.ans[i]?.ok && q.pair).map((q) => q.pair);
+    const store = this.store();
+    const out = { title: a.title, ok, bad: asked - ok - missed, missed, asked, total: a.questions.length, secs: Math.round(secs),
+      wrong: wrongQs.slice(0, 50).map((q) => ({ q: String(q.q).slice(0, 200), ans: String(q.opts[q.correct] ?? "").slice(0, 100) })) };
+    if (a.record && asked) {
+      const pl = await store.addResult(a.qid, uid, name || "Foydalanuvchi", ok, asked, secs);
+      if (pl) Object.assign(out, { place: pl.place, players: pl.total, improved: !!pl.improved, first: !!pl.first });
+      out.top = (await store.top(a.qid, 5)).map((r) => ({ name: r.name, ok: r.ok, total: r.total, secs: Math.round(r.secs || 0) }));
+      const rows = a.questions.map((q, i) => a.ans[i] && { k: String(q.pair ? q.pair[0] + "|" + q.pair[1] : q.q).slice(0, 300),
+        q: String(q.q || "").slice(0, 200), ans: String(q.opts[q.correct] ?? "").slice(0, 100), wrong: a.ans[i].ok ? 0 : 1, total: 1 }).filter(Boolean);
+      if (rows.length) await store.addQStats(a.qid, rows);
+      const rv = await store.reviewUpdate(uid, wrongQs.filter((q) => q.pair), rightPairs, false, a.title);
+      out.reviewAdded = rv.added || 0;
+    }
+    if (wrongQs.length) await this.st.put("appRetry", { qid: a.qid, questions: wrongQs });
+    else await this.st.delete("appRetry");
+    return out;
+  }
+
   async getCpost() {
     const cp = await this.st.get("cpost");
     return cp ? { qid: cp.qid, title: cp.title, chatTitle: cp.chatTitle, sent: cp.idx + 1, total: cp.questions.length,
