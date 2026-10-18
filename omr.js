@@ -6,12 +6,6 @@ export function omrLayout(n, k) {
     markers: [[14, 14], [196, 14], [14, 283], [196, 283]],
     rows: 25, n: Math.min(n, 100), k: Math.min(Math.max(k, 2), 5), id: [], q: [],
   };
-  // O'quvchi raqami: 3 qator (yuzlik, o'nlik, birlik) × 0–9
-  for (let d = 0; d < 3; d++) {
-    const row = [];
-    for (let v = 0; v < 10; v++) row.push([104 + v * 8.5, 44 + d * 7]);
-    L.id.push(row);
-  }
   // Savollar: 4 ustun × 25 qator
   for (let i = 0; i < L.n; i++) {
     const c = Math.floor(i / L.rows), r = i % L.rows;
@@ -113,13 +107,6 @@ export async function answerSheetPdf({ title, n, k, author, brand }) {
   page.drawLine({ start: { x: X(24), y: Y(52) }, end: { x: X(92), y: Y(52) }, thickness: 0.6, color: grey });
   text("Guruh / sana:", 24, 60, 10);
   page.drawLine({ start: { x: X(24), y: Y(66) }, end: { x: X(92), y: Y(66) }, thickness: 0.6, color: grey });
-  // O'quvchi raqami bloki
-  text("O'quvchi raqami", 104 - L.r, 37.5, 8, bold);
-  ["100", "10", "1"].forEach((lbl, d) => text(lbl, 96, L.id[d][0][1] + 1.1, 6.5, font, grey));
-  for (const row of L.id) row.forEach(([x, y], v) => {
-    page.drawCircle({ x: X(x), y: Y(y), size: L.r * MM, borderColor: black, borderWidth: 0.7 });
-    center(String(v), x, y, 6.5, font, light);
-  });
   // Ko'rsatma
   text("Doirachani to'liq bo'yang:", 24, 71, 7, font, grey);
   page.drawCircle({ x: X(60), y: Y(70.3), size: 1.6 * MM, color: black });
@@ -400,6 +387,6 @@ export function omrScan(px, w, h, L, H) {
   const scores = L.q.map((opts) => opts.map(dark));
   const answers = scores.map(choose);
   const digits = L.id.map((row) => choose(row.map(dark)));
-  const id = digits.every((d) => d >= 0) ? String(digits[0] * 100 + digits[1] * 10 + digits[2]).padStart(3, "0") : "";
+  const id = digits.length && digits.every((d) => d >= 0) ? String(digits[0] * 100 + digits[1] * 10 + digits[2]).padStart(3, "0") : "";
   return { answers, id, map, markers: pick.map((c) => [c.cx, c.cy]), scores };
 }

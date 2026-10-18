@@ -2833,7 +2833,7 @@ export class Chat extends DurableObject {
     return this.send(`✅ ${r.id ? `<b>№${r.id}</b> ` : ""}${nm ? esc(nm) + " " : ""}— <b>${gr.ok}/${gr.n}</b> (${pct}%)\n` +
       (wrong.length ? `\n❌ Xatolar (berilgan → to'g'ri):\n<code>${wrong.slice(0, 60).join("  ")}</code>` : "\n🏆 Hammasi to'g'ri!") +
       (blank ? `\n⚪️ Bo'sh: ${blank} ta` : "") + (multi ? `\n⚠️ Bir nechta belgilangan: ${multi} ta` : "") +
-      (r.id ? "" : "\n\n<i>O'quvchi raqami belgilanmagan.</i>") + "\n\nKeyingi varaqni yuboring.",
+      "\n\nKeyingi varaqni yuboring.",
       { reply_to_message_id: m.message_id, reply_markup: kb([[btn("🗑 Bu natijani o'chirish", `scd:${scan}`), btn("✅ Tugatish", `scx:${quiz.id}`)]]) });
   }
 
