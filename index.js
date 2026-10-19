@@ -3,8 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { parseFile, parseText, xlsxSheets } from "./parse.js";
 import { pdfToLines } from "./pdf.js";
-import { handleApp } from "./webapp.js";
-import { omrLayout, omrScan, omrHomography, toGray, gradeAnswers, answerSheetPdf, questionsPdf, questionsDoc, questionsTxt, questionsCsv, resultsCsv, LETTERS } from "./omr.js";
+import { omrLayout, omrScan, omrHomography, toGray, gradeAnswers, answerSheetPdf, questionsPdf, resultsCsv, LETTERS } from "./omr.js";
 import { decodeJpeg } from "./jpeg.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
@@ -672,13 +671,10 @@ async function cardContent(env, quiz, { owner = false, takers = null, author = f
   ];
   if (owner) rows.push([btn("✏️ Tahrirlash", `edit:${quiz.id}`), btn("📊 Statistika", `stat:${quiz.id}`)]);
   if (owner && quiz.status !== "pending") rows.push([btn("🗳 Kanalda so'rovnoma qilish", `cp:${quiz.id}`)]);
-  const app = await env.STORE.get(env.STORE.idFromName("db")).getSetting("appUrl");
-  if (app) rows.splice(1, 0, [{ text: "📱 Ilovada yechish", web_app: { url: `${app}#p=${quiz.id}` } }]);
-  if (owner && app) rows.push([{ text: "📱 Ilovada tahrirlash", web_app: { url: `${app}#q=${quiz.id}` } }]);
   // EvalBee uslubidagi imkoniyatlar: titul, yuklab olish, varaqni tekshirish
   if (owner && quiz.status !== "pending") {
-    rows.push([btn("📄 Titul olish", `ts:${quiz.id}`), btn("📥 Yuklab olish", `dl:${quiz.id}`)]);
-    rows.push([btn("📷 Varaqni tekshirish", `sc:${quiz.id}`), btn("📋 Varaq natijalari", `sr:${quiz.id}`)]);
+    rows.push([btn("📄 Titul olish", `ts:${quiz.id}`), btn("📷 Varaqni tekshirish", `sc:${quiz.id}`)]);
+    rows.push([btn("📋 Varaq natijalari", `sr:${quiz.id}`)]);
   }
   if (author) rows.push([btn(quiz.public ? "🔒 Hammadan yashirish" : "🌐 Hammaga ko'rsatish", `pub:${quiz.id}`)]);
   else if (owner && quiz.status !== "pending") rows.push([btn(quiz.chanMsg ? "🔕 Kanaldan olib tashlash" : quiz.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga joylash", `chan:${quiz.id}`)]);
@@ -1391,7 +1387,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v7 (bot = ilova)</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v8 (faqat bot)</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -1959,8 +1955,6 @@ export class Chat extends DurableObject {
     const takers = owner ? await this.store().takers(quiz.id) : null;
     const author = owner && String(uid) === String(await this.store().getSetting("authorId"));
     const c = await cardContent(this.env, quiz, { owner, takers, author });
-    // Mini App tugmasi faqat shaxsiy chatda ishlaydi
-    if (Number(this.chatId) < 0) c.reply_markup.inline_keyboard = c.reply_markup.inline_keyboard.filter((r) => !r.some((b) => b.web_app));
     if (!owner && isAdmin) c.reply_markup.inline_keyboard.push(
       [btn("🗑 Admin: o'chirish", `mod:del:${quiz.id}`), btn("🚫 Tuzuvchini bloklash", `mod:ban:${quiz.id}`)]);
     else if (!owner && String(quiz.owner) !== String(await this.store().getSetting("authorId")))
@@ -2627,7 +2621,7 @@ export class Chat extends DurableObject {
     }
 
     // Titul, yuklab olish, varaqni tekshirish
-    if (["ts", "dl", "dlf", "sc", "scx", "sr", "scd", "om", "omp", "br"].includes(kind)) return this.omrCallback(kind, val, msgId, uid, answer);
+    if (["ts", "sc", "scx", "sr", "scd", "om", "omp", "br"].includes(kind)) return this.omrCallback(kind, val, msgId, uid, answer);
 
     // Kanalda so'rovnoma (viktorina) joylash
     if (kind === "cp" || kind === "cpi" || kind === "cpgo" || kind === "cpx") return this.cpostCallback(kind, val, msgId, uid, answer);
@@ -2745,7 +2739,7 @@ export class Chat extends DurableObject {
     if (page < pages - 1) nav.push(btn("Keyingi ➡️", `omp:${page + 1}`));
     if (nav.length) rows.push(nav);
     rows.push([btn("🏫 Markaz nomi va logotipi", "br:menu")]);
-    const text = `📄 <b>Titul va varaq</b> (${total} ta test)\n\nTestni tanlang:\n• titul (javob varaqasi) va savollar varag'ini olish\n• savollarni PDF, Word, Excel, TXT da yuklab olish\n• to'ldirilgan varaqni suratdan tekshirish va natijalar`;
+    const text = `📄 <b>Titul va varaq</b> (${total} ta test)\n\nTestni tanlang:\n• titul (javob varaqasi) va savollar varag'ini olish\n• to'ldirilgan varaqni suratdan tekshirish va natijalar`;
     return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
   }
   async omrTestMenu(quiz, editId) {
@@ -2753,8 +2747,8 @@ export class Chat extends DurableObject {
     const scans = (await this.store().listScans(quiz.id, quiz.owner)).length;
     const text = `📄 <b>${esc(quiz.title)}</b>\n🖊 ${quiz.questions?.length || quiz.count} ta savol${(quiz.questions?.length || quiz.count) > 100 ? " (titulga birinchi 100 tasi sig'adi)" : ""}` +
       (scans ? `\n📋 Tekshirilgan varaqlar: ${scans} ta` : "");
-    const reply_markup = kb([[btn("📄 Titul olish", `ts:${quiz.id}`), btn("📥 Yuklab olish", `dl:${quiz.id}`)],
-      [btn("📷 Varaqni tekshirish", `sc:${quiz.id}`), btn(`📋 Natijalar${scans ? ` (${scans})` : ""}`, `sr:${quiz.id}`)],
+    const reply_markup = kb([[btn("📄 Titul olish", `ts:${quiz.id}`), btn("📷 Varaqni tekshirish", `sc:${quiz.id}`)],
+      [btn(`📋 Natijalar${scans ? ` (${scans})` : ""}`, `sr:${quiz.id}`)],
       [btn("⬅️ Testlar ro'yxati", "omp:0"), btn("🎲 Test kartasi", `open:${quiz.id}`)]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
   }
@@ -2824,7 +2818,7 @@ export class Chat extends DurableObject {
       return this.send(`✅ Tekshirish tugadi.${n ? ` Bu test bo'yicha jami ${n} ta varaq saqlangan.` : ""}`,
         quiz && n ? { reply_markup: kb([[btn("📋 Natijalar (Excel)", `sr:${quiz.id}`)]]) } : {});
     }
-    const id = kind === "dlf" ? val.split(":")[1] : val;
+    const id = val;
     const quiz = await store.getQuiz(id);
     if (!quiz) return answer("Test topilmadi", true);
     if (quiz.owner !== uid) return answer("Faqat test egasi uchun", true);
@@ -2841,31 +2835,6 @@ export class Chat extends DurableObject {
       await this.sendFile(await questionsPdf({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand }), `${name} - savollar.pdf`,
         "📝 <b>Savollar varag'i.</b> Oxirgi sahifada javoblar kaliti bor — uni o'quvchilarga bermang.", "application/pdf");
       return this.send("Varaqlar to'ldirilgach, ularni shu yerda tekshirasiz:", { reply_markup: kb([[btn("📷 Varaqni tekshirish", `sc:${id}`)]]) });
-    }
-    if (kind === "dl") {
-      await answer();
-      return this.send(`📥 <b>${esc(quiz.title)}</b> — qaysi formatda yuklab olasiz?`, { reply_markup: kb([
-        [btn("📕 PDF", `dlf:pdf:${id}`), btn("📘 Word", `dlf:doc:${id}`)],
-        [btn("📗 Excel", `dlf:xls:${id}`), btn("📄 Matn (.txt)", `dlf:txt:${id}`)],
-        [btn("📄 Titul (javob varaqasi)", `ts:${id}`)]]) });
-    }
-    if (kind === "dlf") {
-      await answer("⏳ Tayyorlanmoqda…");
-      await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
-      const fmt = val.split(":")[0];
-      const qs = quiz.questions?.length ? quiz.questions : await this.fixedQuestions(quiz);
-      const k = Math.max(2, ...qs.map((q) => q.opts.length));
-      const enc = (t) => new TextEncoder().encode(t);
-      const f = {
-        pdf: async () => [await questionsPdf({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand }), "pdf", "application/pdf",
-          qs.length > 100 ? "📕 PDF (birinchi 100 ta savol). Hammasi kerak bo'lsa — Word yoki Excel." : "📕 PDF — chop etish uchun. Oxirgi sahifada kalit."],
-        doc: async () => [enc(questionsDoc({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand })), "doc", "application/msword", "📘 Word — tahrirlash va chop etish uchun. Oxirgi sahifada kalit."],
-        xls: async () => [enc(questionsCsv({ questions: qs })), "csv", "text/csv", "📗 Excel jadvali: savol, variantlar, javob, izoh."],
-        txt: async () => [enc(questionsTxt({ title: quiz.title, questions: qs })), "txt", "text/plain", "📄 Matn — shu faylni botga qayta yuborsangiz, xuddi shu test tuziladi."],
-      }[fmt];
-      if (!f) return;
-      const [bytes, ext, type, cap] = await f();
-      return this.sendFile(bytes, `${name}.${ext}`, cap, type);
     }
     if (kind === "sc") {
       await answer();
@@ -3018,289 +2987,6 @@ export class Chat extends DurableObject {
     await this.st.put("cpost", job);
     await this.st.setAlarm(Date.now() + 1000);
     return { ok: true };
-  }
-  // ---------- Mini App: o'quvchi testni ilovada yechadi ----------
-  // Javoblar serverda tekshiriladi: to'g'ri javob o'quvchiga savol yuborilganda ko'rsatilmaydi
-  async appStart(uid, quiz, retry, review) {
-    if (await this.st.get("banned")) return { error: "🚫 Siz botdan bloklangansiz" };
-    if (!(await this.isMember(uid))) return { error: "join", channels: channelsOf(this.env).map((c) => ({ name: c.name, link: c.link })) };
-    let questions, record = true, title = quiz.title;
-    if (review) {
-      const items = await this.store().reviewItems(uid, review === "due");
-      if (!items.length) return { error: "Takrorlash ro'yxatingiz bo'sh" };
-      questions = prepare(items, "all"); record = false; title = "🧠 Umumiy takrorlash";
-      quiz = { id: "review", title, timer: 30, owner: 0 };
-    } else if (retry) {
-      const r = await this.st.get("appRetry");
-      if (!r || r.qid !== quiz.id || !r.questions.length) return { error: "Qayta ishlash uchun xato savol yo'q" };
-      questions = prepare(r.questions, "all"); record = false; title = quiz.title + " — xatolar";
-    } else questions = prepare(quizQuestions(quiz), quiz.shuffle || "all");
-    if (!questions.length) return { error: "Savol tuzib bo'lmadi" };
-    const timer = quiz.timer || 30;
-    await this.st.put("app", { qid: quiz.id, title, questions, ans: [], started: Date.now(), timer, record, owner: quiz.owner, review: review || null });
-    return { title, timer, total: questions.length, record,
-      questions: questions.map((q) => ({ q: q.q, opts: q.opts, img: q.img || undefined })) };
-  }
-  async appAnswer(i, choice) {
-    const a = await this.st.get("app");
-    if (!a) return { error: "Sessiya topilmadi — testni qaytadan boshlang" };
-    const q = a.questions[i];
-    if (!q) return { error: "Savol topilmadi" };
-    if (a.ans[i] == null) {
-      const c = Number.isInteger(choice) && choice >= 0 && choice < q.opts.length ? choice : -1;
-      const now = Date.now();
-      a.ans[i] = { c, ok: c === q.correct, t: Math.min(a.timer, Math.max(0, (now - (a.last || a.started)) / 1000)) };
-      a.last = now;
-      await this.st.put("app", a);
-    }
-    return { right: q.correct, ok: a.ans[i].ok, exp: q.exp || "" };
-  }
-  async appFinish(uid, name) {
-    const a = await this.st.get("app");
-    if (!a) return { error: "Sessiya topilmadi" };
-    await this.st.delete("app");
-    const asked = a.ans.filter(Boolean).length;
-    const ok = a.ans.filter((x) => x?.ok).length;
-    const missed = a.ans.filter((x) => x && x.c === -1).length;
-    const secs = a.ans.reduce((s, x) => s + (x?.t || 0), 0);
-    const wrongQs = a.questions.filter((q, i) => a.ans[i] && !a.ans[i].ok);
-    const rightPairs = a.questions.filter((q, i) => a.ans[i]?.ok && q.pair).map((q) => q.pair);
-    const store = this.store();
-    const out = { title: a.title, ok, bad: asked - ok - missed, missed, asked, total: a.questions.length, secs: Math.round(secs),
-      wrong: wrongQs.slice(0, 50).map((q) => ({ q: String(q.q).slice(0, 200), ans: String(q.opts[q.correct] ?? "").slice(0, 100) })) };
-    if (a.record && asked) {
-      const pl = await store.addResult(a.qid, uid, name || "Foydalanuvchi", ok, asked, secs);
-      if (pl) Object.assign(out, { place: pl.place, players: pl.total, improved: !!pl.improved, first: !!pl.first });
-      out.top = (await store.top(a.qid, 5)).map((r) => ({ name: r.name, ok: r.ok, total: r.total, secs: Math.round(r.secs || 0) }));
-      const rows = a.questions.map((q, i) => a.ans[i] && { k: String(q.pair ? q.pair[0] + "|" + q.pair[1] : q.q).slice(0, 300),
-        q: String(q.q || "").slice(0, 200), ans: String(q.opts[q.correct] ?? "").slice(0, 100), wrong: a.ans[i].ok ? 0 : 1, total: 1 }).filter(Boolean);
-      if (rows.length) await store.addQStats(a.qid, rows);
-      const rv = await store.reviewUpdate(uid, wrongQs.filter((q) => q.pair), rightPairs, false, a.title);
-      out.reviewAdded = rv.added || 0;
-    }
-    if (a.review) {
-      const rv = await store.reviewUpdate(uid, wrongQs.filter((q) => q.pair), rightPairs, a.review === "due", "");
-      out.review = { mastered: rv.mastered || 0, advanced: rv.advanced || 0, left: rv.left || 0 };
-    }
-    if (wrongQs.length) await this.st.put("appRetry", { qid: a.qid, questions: wrongQs });
-    else await this.st.delete("appRetry");
-    return out;
-  }
-
-  // ---------- Mini App: menyular ----------
-  // Fayldan test tuzish: 1) faylni o'qish (bot bilan bir xil «src» — 1 soat saqlanadi)
-  async appParse(from, name, bytes) {
-    this.chatId = from.id; this.from = from;
-    if (await this.st.get("banned")) return { error: "🚫 Siz botdan bloklangansiz" };
-    if (bytes.byteLength > MAX_FILE) return { error: "Fayl 20 MB dan katta" };
-    let parsed;
-    try { parsed = await parseFile(name, new Uint8Array(bytes)); } catch (e) { console.log("App fayl", e); return { error: "Faylni o'qib bo'lmadi. Formatni tekshiring." }; }
-    if (!parsed.pairs.length && !parsed.mcq?.questions.length) {
-      if (parsed.mcq?.missing) return { error: `${parsed.mcq.missing} ta savol topildi, lekin to'g'ri javoblari ko'rsatilmagan. Har bir savol ostiga «Javob: B» deb yozing yoki to'g'ri variant oldiga * qo'ying.` };
-      return { error: /\.pdf$/i.test(name) ? "PDF ichidan matn topilmadi (skanerlangan PDF bo'lishi mumkin). Word'dan saqlangan PDF yuboring." : "Fayldan so'z yoki test savoli topilmadi." };
-    }
-    const content = [parsed.title, parsed.mcq?.title, ...(parsed.mcq?.questions || []).flatMap((q) => [q.q, q.exp, ...q.opts]), ...parsed.pairs.flatMap((p) => [p[0], p[1]])];
-    if (!this.isAuthor(from)) { const x = findLink(content); if (x) return { error: `Faylda havola yoki kanal/username bor: ${x}. Uni olib tashlab, qaytadan yuklang.` }; }
-    const used = [...new Set((parsed.mcq?.questions || []).map((q) => q.imgIdx).filter((x) => x != null))].slice(0, 100);
-    if (used.length) {
-      const ids = await uploadImages(this.env, from.id, used.map((i) => parsed.images[i]));
-      const map = new Map(used.map((i, k) => [i, ids[k]]));
-      for (const q of parsed.mcq.questions) { if (q.imgIdx != null && map.get(q.imgIdx)) q.img = map.get(q.imgIdx); delete q.imgIdx; }
-    }
-    const fallback = name.replace(/\.[^.]+$/, "").replace(/_/g, " ");
-    const exp = Date.now() + SRC_TTL;
-    await this.st.put("src", { exp, name: fallback, parsed: { pairs: parsed.pairs, title: parsed.title, sections: parsed.sections, lessons: parsed.lessons,
-      mcq: parsed.mcq ? { title: parsed.mcq.title, questions: parsed.mcq.questions, missing: parsed.mcq.missing } : null } });
-    const al = await this.st.getAlarm();
-    if (!al || al > exp) await this.st.setAlarm(exp + 1000);
-    return this.appSrcInfo();
-  }
-  async appSrcInfo() {
-    const src = await this.getSrc();
-    if (!src) return { none: true };
-    const p = src.parsed, mcq = p.mcq;
-    if (mcq && mcq.questions.length >= 2 && mcq.questions.length >= p.pairs.length / 3)
-      return { kind: "mcq", file: src.name, title: (mcq.title || src.name).slice(0, 60), count: mcq.questions.length, exp: src.exp,
-        img: mcq.questions.filter((q) => q.img).length, expl: mcq.questions.filter((q) => q.exp).length, missing: mcq.missing || 0 };
-    if (p.pairs.length < 4) return { error: "Kamida 4 ta so'z juftligi kerak (so'z - tarjima)" };
-    const lessons = (p.lessons || []).map((l, i) => ({ i, level: l.level, name: l.name, count: p.pairs.filter((x) => x[3] === i).length })).filter((l) => l.count);
-    const secCount = {};
-    for (const x of p.pairs) { const nm = p.sections?.[x[2]]; if (nm) secCount[nm] = (secCount[nm] || 0) + 1; }
-    return { kind: "words", file: src.name, title: (p.title || src.name).slice(0, 60), total: uniqWords(p.pairs).length, exp: src.exp,
-      lessons: lessons.length > 1 ? lessons : [], sections: Object.entries(secCount).map(([name, count]) => ({ name, count })) };
-  }
-  // Bo'lim/darslar bo'yicha nechta so'z chiqishini hisoblash (formada jonli ko'rsatiladi)
-  async appSrcPick(o) {
-    const src = await this.getSrc();
-    if (!src) return { error: "Fayl muddati tugagan — qaytadan yuklang" };
-    const p = src.parsed;
-    let pairs = p.pairs;
-    if (Array.isArray(o.lessons) && o.lessons.length) pairs = pairs.filter((x) => o.lessons.includes(x[3]));
-    let named = pairs.map((x) => [x[0], x[1], p.sections?.[x[2]] ?? null]);
-    const secCount = {};
-    for (const x of named) if (x[2]) secCount[x[2]] = (secCount[x[2]] || 0) + 1;
-    if (Array.isArray(o.sections) && o.sections.length) named = named.filter((x) => o.sections.includes(x[2]));
-    return { list: uniqWords(named), sections: Object.entries(secCount).map(([name, count]) => ({ name, count })) };
-  }
-  // 2) Testni yaratish (bitta yoki qismlarga bo'lib)
-  async appCreate(from, o) {
-    this.chatId = from.id; this.from = from;
-    if (await this.st.get("banned")) return { error: "🚫 Siz botdan bloklangansiz" };
-    const src = await this.getSrc();
-    if (!src) return { error: "Fayl muddati tugagan — qaytadan yuklang" };
-    const info = await this.appSrcInfo();
-    let list, mcq = info.kind === "mcq";
-    if (mcq) list = src.parsed.mcq.questions;
-    else {
-      const r = await this.appSrcPick(o);
-      if (r.error) return r;
-      list = r.list;
-      if (list.length < 4) return { error: "Tanlangan qismda 4 tadan kam so'z bor" };
-    }
-    const n = list.length;
-    const count = Math.max(1, Math.min(n, MAX_QUESTIONS, parseInt(o.count, 10) || n));
-    const create = { pairs: list, title: String(o.title || info.title).trim().slice(0, 100) || info.title, description: String(o.description || "").trim().slice(0, 300),
-      timer: TIMERS.includes(+o.timer) ? +o.timer : 30, shuffle: SHUFFLE[o.shuffle] ? o.shuffle : "all", count, mcq, direction: DIRS[o.direction] ? o.direction : "fwd" };
-    const size = parseInt(o.split, 10);
-    if (size > 0 && size < n) {
-      if (splitSizes(n, size).length > MAX_PARTS) return { error: `Ko'pi bilan ${MAX_PARTS} ta qism` };
-      create.split = { size, order: o.order === "rnd" ? "rnd" : "seq" };
-    }
-    if (!this.isAuthor(from)) {
-      const x = findLink([create.title, create.description]);
-      if (x) return { error: `Nom yoki tavsifda havola bor: ${x}` };
-    }
-    return this.saveCreate(create, from);
-  }
-  // Qo'lda yozilgan savollardan test
-  async appCreateManual(from, d) {
-    this.chatId = from.id; this.from = from;
-    if (await this.st.get("banned")) return { error: "🚫 Siz botdan bloklangansiz" };
-    return this.saveCreate({ manual: d.questions, title: d.title, description: d.description, timer: d.timer, shuffle: d.shuffle }, from);
-  }
-  // Bot bilan bir xil saqlash qoidalari: moderatsiya (taqiqlangan so'z → tekshiruv), muallif belgisi
-  async saveCreate(create, from) {
-    const uid = from.id, store = this.store();
-    const author = this.isAuthor(from);
-    if (author) await store.setSetting("authorId", String(uid));
-    const toQ = (q) => ({ q: q.q, opts: q.opts.map((o) => o || "—"), correct: q.correct, pair: [q.q.length > 80 ? q.q.slice(0, 77) + "…" : q.q, q.opts[q.correct]],
-      ...(q.img ? { img: q.img } : {}), ...(q.exp ? { exp: q.exp.slice(0, EXP_MAX) } : {}) });
-    const parts = [];
-    if (create.manual) parts.push({ title: create.title, questions: create.manual, pairs: [], direction: "mcq" });
-    else if (create.split) {
-      const n = create.pairs.length;
-      const order = create.split.order === "rnd" ? shuffle([...create.pairs.keys()]) : [...create.pairs.keys()];
-      let pos = 0;
-      splitSizes(n, create.split.size).forEach((sz, k) => {
-        const idx = order.slice(pos, pos + sz); pos += sz;
-        const title = `${create.title} (${k + 1}-qism)`.slice(0, 100);
-        if (create.mcq) parts.push({ title, questions: idx.sort((a, b) => a - b).map((i) => toQ(create.pairs[i])), pairs: [], direction: "mcq" });
-        else { const part = idx.map((i) => create.pairs[i]);
-          parts.push({ title, questions: buildQuestions(part, part.length, create.direction, create.pairs, true), pairs: part, direction: create.direction }); }
-      });
-    } else if (create.mcq) {
-      const idx = sample([...create.pairs.keys()], create.count).sort((a, b) => a - b);
-      parts.push({ title: create.title, questions: idx.map((i) => toQ(create.pairs[i])), pairs: [], direction: "mcq" });
-    } else parts.push({ title: create.title, questions: buildQuestions(create.pairs, create.count, create.direction), pairs: create.pairs, direction: create.direction });
-    const made = [];
-    let reported = false;
-    for (const pt of parts) {
-      if (!pt.questions.length) continue;
-      const id = await store.saveQuiz({ owner: uid, title: pt.title, description: create.description || "", pairs: pt.pairs, direction: pt.direction,
-        timer: create.timer, shuffle: create.shuffle, questions: pt.questions });
-      const bad = author ? null : badWord(quizTexts({ title: pt.title, description: create.description, questions: pt.questions }));
-      if (bad) {
-        await store.setStatus(id, "pending");
-        if (!reported) { reported = true; await this.reportToAdmin(await store.getQuiz(id), "🚨 <b>Shubhali test (avtomatik filtr)</b>", `🔎 Topilgan so'z: <code>${esc(bad)}</code>\n`); }
-      }
-      made.push({ id, title: pt.title, n: pt.questions.length, pending: !!bad });
-    }
-    if (!made.length) return { error: "Savol tuzib bo'lmadi" };
-    return { ok: true, made, author };
-  }
-  // Muallifga xabar (ilovadan)
-  async appSupport(from, text) {
-    this.chatId = from.id;
-    const admin = await this.adminChat();
-    if (!admin) return { error: "Hozircha xabar yuborib bo'lmadi" };
-    const last = (await this.st.get("supLast")) || 0;
-    if (Date.now() - last < 15000) return { error: "Biroz kuting va qayta yuboring" };
-    await this.st.put("supLast", Date.now());
-    const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || "Foydalanuvchi";
-    const r = await tg(this.env, "sendMessage", { chat_id: admin, parse_mode: "HTML",
-      text: `📩 <b>Yangi xabar</b> (ilovadan)\n👤 <a href="tg://user?id=${from.id}">${esc(name)}</a>${from.username ? ` (@${esc(from.username)})` : ""}\n🆔 <code>${from.id}</code>\n\n${esc(text)}`,
-      reply_markup: kb([[btn("↩️ Javob berish", `sup:r:${from.id}`)]]) });
-    return r.ok ? { ok: true } : { error: "Xabarni yuborib bo'lmadi" };
-  }
-  // Yo'riqnoma va namunalarni chatga yuborish
-  async appSendGuide(from, what) {
-    this.chatId = from.id; this.from = from;
-    await this.loadLang(from);
-    if (what === "bot" || what === "fmt") { const r = await this.sendGuide(what); return { ok: r?.ok !== false }; }
-    const list = await this.samples();
-    if (what === "all") { for (const smp of list) await this.sendSample(smp); return { ok: list.length > 0 }; }
-    const smp = list[+what];
-    if (!smp) return { error: "Namuna topilmadi" };
-    await this.sendSample(smp);
-    return { ok: true };
-  }
-  async appGuideInfo() {
-    const store = this.store();
-    return { bot: !!(await store.getSetting("guide")), fmt: !!(await store.getSetting("fguide")), samples: (await this.samples()).map((x) => x.title) };
-  }
-  async appLang(code) {
-    if (code && LANGS[code]) await this.st.put("lang", code);
-    return { lang: (await this.st.get("lang")) || (await this.st.get("langAuto")) || "uz", langs: LANGS };
-  }
-  async appDeleteData(uid) {
-    this.chatId = uid;
-    const res = await this.store().deleteUserData(uid);
-    if (this.env.TESTS_CHANNEL)
-      for (const mid of res.posts) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
-    for (const k of ["sess", "create", "edit", "retry", "reg", "awaitAd", "adDraft", "awaitMat", "pendingStart", "app", "appRetry", "src", "book"]) await this.st.delete(k);
-    return { ok: true, quizzes: res.quizzes };
-  }
-
-  // Ilovadan: kanalga joylash / so'rov / olib tashlash (muallif uchun — hammaga ko'rsatish)
-  async appChan(from, id) {
-    this.chatId = from.id; this.from = from;
-    const store = this.store(), uid = from.id;
-    const quiz = await store.getQuiz(id);
-    if (!quiz || quiz.owner !== uid) return { error: "Faqat test egasi uchun" };
-    if (quiz.status === "pending") return { error: "⏳ Test tekshiruvda" };
-    if (this.isAuthor(from)) {
-      const on = !quiz.public;
-      await store.setPublic(quiz.id, on);
-      if (on) { await this.postToChannel(quiz, from); return { ok: true, msg: "🌐 Endi hammaga ko'rinadi va kanalga joylandi" }; }
-      if (quiz.chanMsg && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
-      await store.setChanMsg(quiz.id, null);
-      return { ok: true, msg: "🔒 Obunachilardan yashirildi" };
-    }
-    if (!this.env.TESTS_CHANNEL) return { error: "Kanal sozlanmagan" };
-    if (quiz.chanMsg) {
-      await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
-      await store.setChanMsg(quiz.id, null);
-      return { ok: true, msg: "🔕 Kanaldan olib tashlandi" };
-    }
-    if (quiz.chanReq) { await store.setChanReq(quiz.id, null); return { ok: true, msg: "↩️ So'rov bekor qilindi" }; }
-    const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || "obunachi";
-    await store.setChanReq(quiz.id, name);
-    const admin = await this.adminChat();
-    if (admin) {
-      const n = quiz.questions?.length || quiz.count;
-      const smp = (quiz.questions || []).slice(0, 5).map((q, i) => `${i + 1}. ${esc(q.q.slice(0, 100))} — <i>${esc(String(q.opts?.[q.correct] ?? "").slice(0, 60))}</i>`).join("\n");
-      await tg(this.env, "sendMessage", { chat_id: admin, parse_mode: "HTML",
-        text: `📢 <b>Kanalga chiqarish so'rovi</b>\n\n🎲 <b>${esc(quiz.title)}</b>\n` + (quiz.description ? `<i>${esc(quiz.description)}</i>\n` : "") +
-          `🖊 ${n} ta savol\n👤 Tuzuvchi: ${esc(name)}${from.username ? ` (@${esc(from.username)})` : ""}\n\n<b>Savollardan namuna:</b>\n${smp}`,
-        reply_markup: kb([[btn("✅ Kanalga chiqarish", `chq:ok:${quiz.id}`), btn("❌ Rad etish", `chq:no:${quiz.id}`)], [btn("👁 Testni ochish", `open:${quiz.id}`)]]) });
-    }
-    return { ok: true, msg: "📨 So'rov muallifga yuborildi. Tasdiqlangach test kanalda chiqadi." };
-  }
-
-  async getCpost() {
-    const cp = await this.st.get("cpost");
-    return cp ? { qid: cp.qid, title: cp.title, chatTitle: cp.chatTitle, sent: cp.idx + 1, total: cp.questions.length,
-      interval: cp.interval, stopped: !!cp.stopped, owner: cp.owner } : null;
   }
   async stopCpost(uid) {
     const cp = await this.st.get("cpost");
@@ -3869,9 +3555,9 @@ export default {
         drop_pending_updates: true,
       });
       await tg(env, "setMyCommands", { commands: USER_COMMANDS });
-      // Mini App: bot menyusidagi «📱 Ilova» tugmasi
-      await env.STORE.get(env.STORE.idFromName("db")).setSetting("appUrl", `${url.origin}/app`);
-      await tg(env, "setChatMenuButton", { menu_button: { type: "web_app", text: "📱 Ilova", web_app: { url: `${url.origin}/app` } } });
+      // Mini App olib tashlangan: menyu tugmasi oddiy buyruqlar ro'yxatiga qaytariladi
+      await env.STORE.get(env.STORE.idFromName("db")).setSetting("appUrl", "");
+      await tg(env, "setChatMenuButton", { menu_button: { type: "commands" } });
       for (const lc of ["ru", "en", "tr"]) await tg(env, "setMyCommands", { commands: trCommands(lc, USER_COMMANDS), language_code: lc });
       let msg = r.ok ? "✅ Bot ulandi! Endi Telegramda botingizga /start yozing." : "❌ Xato: " + r.description;
       const me = (await tg(env, "getMe", {})).result;
@@ -3893,9 +3579,6 @@ export default {
       ctx.waitUntil(route(update, env).catch((e) => console.log("Xato", e)));
       return new Response("ok");
     }
-    if (url.pathname === "/app" || url.pathname.startsWith("/api/"))
-      return handleApp(req, env, url, env.STORE.get(env.STORE.idFromName("db")),
-        { buildQuestions, prepare, quizQuestions, botName, chat: (id) => env.CHAT.get(env.CHAT.idFromName(String(id))) });
     return new Response("LingoUP bot ishlayapti ✅", { headers: { "content-type": "text/plain; charset=utf-8" } });
   },
 };

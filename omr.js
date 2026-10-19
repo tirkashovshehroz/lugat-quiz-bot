@@ -195,40 +195,7 @@ export async function questionsPdf({ title, description, questions, k, author, b
   return doc.save();
 }
 
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-
-// Savollar varag'i — Word ochadigan .doc (HTML) fayl
-export function questionsDoc({ title, description, questions, k, author, brand }) {
-  const qs = questions.slice(0, 1000).map((q, i) =>
-    `<p class=q><b>${i + 1}.</b> ${esc(q.q)}</p><p class=o>` +
-    q.opts.slice(0, Math.max(k, q.opts.length)).map((o, j) => `<span>${"ABCDEFGHIJ"[j]}) ${esc(o)}</span>`).join("&nbsp;&nbsp;&nbsp;&nbsp; ") + "</p>").join("");
-  const key = questions.slice(0, 1000).map((q, i) => `${i + 1}-${"ABCDEFGHIJ"[q.correct] || "?"}`).join(", ");
-  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8">
-<title>${esc(title)}</title><style>body{font-family:Calibri,Arial,sans-serif;font-size:12pt}h1{font-size:16pt;margin:0}
-.q{margin:10pt 0 2pt}.o{margin:0 0 0 14pt}.key{page-break-before:always}.muted{color:#666;font-size:10pt}.brand{color:#26559a;font-weight:bold;font-size:13pt}</style></head><body>
-${brand?.logo ? `<img src="data:image/${brand.logo.t === "png" ? "png" : "jpeg"};base64,${brand.logo.d}" height=48> ` : ""}${brand?.name ? `<p class=brand>${esc(brand.name)}</p>` : ""}
-<h1>${esc(title)}</h1>${description ? `<p class=muted>${esc(description)}</p>` : ""}
-<p class=muted>Ism-familiya: ______________________ &nbsp;&nbsp; Sana: ____________</p>
-${qs}
-<div class=key><h1>Javoblar kaliti (o'qituvchi uchun)</h1><p>${key}</p><p class=muted>${esc(author || "")} · LingoUP bot</p></div>
-</body></html>`;
-}
-
-// Botga qayta yuklasa bo'ladigan matn (.txt): savol, A) B) C) variantlar, «Javob:», «Izoh:»
-export function questionsTxt({ title, questions }) {
-  return `${title}\n\n` + questions.map((q, i) => `${i + 1}. ${q.q}\n` + q.opts.map((o, j) => `${"ABCDEFGHIJ"[j]}) ${o}`).join("\n") +
-    `\nJavob: ${"ABCDEFGHIJ"[q.correct]}` + (q.exp ? `\nIzoh: ${q.exp}` : "")).join("\n\n") + "\n";
-}
-
-// Excel ochadigan jadval (.csv): № | Savol | A..E | Javob | Izoh
 const cell = (v) => { const t = String(v ?? ""); return /[;"\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-export function questionsCsv({ questions }) {
-  const m = Math.max(2, ...questions.map((q) => q.opts.length));
-  const L = "ABCDEFGHIJ".slice(0, m).split("");
-  const rows = [["№", "Savol", ...L, "Javob", "Izoh"].join(";")];
-  questions.forEach((q, i) => rows.push([i + 1, q.q, ...L.map((_, j) => q.opts[j] ?? ""), L[q.correct], q.exp || ""].map(cell).join(";")));
-  return "﻿sep=;\r\n" + rows.join("\r\n");
-}
 
 // Skaner natijalari jadvali (.csv)
 export function resultsCsv(questions, scans) {
