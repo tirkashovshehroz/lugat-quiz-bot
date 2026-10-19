@@ -5,6 +5,7 @@ import { parseFile, parseText, xlsxSheets } from "./parse.js";
 import { pdfToLines } from "./pdf.js";
 import { omrLayout, omrScan, omrHomography, toGray, gradeAnswers, answerSheetPdf, questionsPdf, resultsCsv, LETTERS } from "./omr.js";
 import { decodeJpeg } from "./jpeg.js";
+import { START_IMG, START_IMG_VER } from "./start_img.js";
 import { mergePdfs, splitPdf, extractPages, removePages, organizePdf, reversePdf, rotatePdf, addPageNumbers, addWatermark, cropPdf,
   imagesToPdf, extractImages, compressPdf, repairPdf, makeZip, parseRanges, pageCount } from "./pdftools.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
@@ -855,11 +856,32 @@ export class Chat extends DurableObject {
     const pending = await this.st.get("langStart");
     await this.st.delete("langStart");
     if (pending) return this.openQuiz(pending, cq.from, "private");
-    return this.sendHelp();
+    return this.sendStart();
   }
 
   sendHelp() {
     return this.send(HELP + `\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`, { reply_markup: MAIN_KB });
+  }
+  // /start: matn o'rniga botni tushuntiruvchi rasm (birinchi marta yuklanadi, keyin file_id orqali tez yuboriladi)
+  async sendStart() {
+    const caption = "📚 <b>LingoUP bot</b> — fayl yuboring, test tayyor!\n\nPastdagi menyudan kerakli bo'limni tanlang yoki faylni shu yerga yuboring.\n" +
+      `Barcha buyruqlar: /help\n\n👨‍🏫 Muallif: ${esc(authorOf(this.env))}`;
+    const store = this.store(), key = "startImg:" + START_IMG_VER;
+    const fid = await store.getSetting(key);
+    if (fid) {
+      const r = await this.tgx("sendPhoto", { chat_id: this.chatId, photo: fid, caption, parse_mode: "HTML", reply_markup: MAIN_KB });
+      if (r.ok) return r;
+    }
+    const bytes = Uint8Array.from(atob(START_IMG), (c) => c.charCodeAt(0));
+    const fd = new FormData();
+    fd.append("chat_id", String(this.chatId));
+    fd.append("caption", this.lang && this.lang !== "uz" ? tr(this.lang, caption) : caption);
+    fd.append("parse_mode", "HTML");
+    fd.append("reply_markup", JSON.stringify(this.lang && this.lang !== "uz" ? trMarkup(this.lang, MAIN_KB) : MAIN_KB));
+    fd.append("photo", new Blob([bytes], { type: "image/jpeg" }), "lingoup.jpg");
+    const r = await fetch(`https://api.telegram.org/bot${this.env.BOT_TOKEN}/sendPhoto`, { method: "POST", body: fd }).then((x) => x.json()).catch(() => ({ ok: false }));
+    if (r.ok) { await store.setSetting(key, r.result.photo.at(-1).file_id); return r; }
+    return this.sendHelp(); // rasm yuborilmasa — oddiy matn
   }
   isAuthor(from) {
     const a = authorOf(this.env).replace(/^@/, "").toLowerCase();
@@ -1345,7 +1367,7 @@ export class Chat extends DurableObject {
             return this.langPicker();
           }
           if (arg) return this.openQuiz(arg, m.from, m.chat.type);
-          return isPrivate ? this.sendHelp() : target ? this.send(HELP) : null;
+          return isPrivate ? this.sendStart() : target ? this.send(HELP) : null;
         case "lang":
         case "til":
         case "language":
@@ -1498,7 +1520,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v9 (PDF vositalari)</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v10 (start rasmi)</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2438,7 +2460,7 @@ export class Chat extends DurableObject {
         await this.st.delete("pendingStart");
         return this.openQuiz(pending, cq.from, "private");
       }
-      return this.sendHelp();
+      return this.sendStart();
     }
 
     // Test yaratish
