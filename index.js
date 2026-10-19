@@ -26,6 +26,7 @@ const BTN_SET = "⚙️ Sozlamalar";
 const BTN_REVIEW = "🧠 Takrorlash";
 const BTN_DONATE = "💝 Qo'llab-quvvatlash";
 const BTN_TOOLS = "🧰 Fayl vositalari";
+const BTN_OMR = "📄 Titul va varaq";
 const TOOL_MAX_FILES = 30, TOOL_MAX_BYTES = 45 * 1024 * 1024;
 const DAY = 86400e3;
 const REVIEW_STEPS = [1, 3, 7]; // xatodan keyin 1 kun, so'ng 3 va 7 kun; 3 marta to'g'ri — o'zlashtirildi
@@ -37,8 +38,8 @@ const NEWQUIZ_TEXT = "📄 <b>1-usul — fayldan (tez):</b> PDF, Word, Excel yok
   "🖼 Rasmli savol uchun avval rasmni yuboring, keyin viktorinani.\n\n" +
   "🗂 Fayl qanday bo'lishi kerakligini ko'rish uchun: /namuna";
 const TG_DELETE_URL = "https://my.telegram.org/auth?to=delete";
-const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_CAT }, { text: BTN_REVIEW }], [{ text: BTN_GUIDE }, { text: BTN_AUTHOR }],
-  [{ text: BTN_AD }, { text: BTN_SET }], [{ text: BTN_TOOLS }, { text: BTN_DONATE }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
+const MAIN_KB = { keyboard: [[{ text: BTN_NEW }, { text: BTN_MY }], [{ text: BTN_OMR }, { text: BTN_CAT }], [{ text: BTN_REVIEW }, { text: BTN_GUIDE }],
+  [{ text: BTN_AUTHOR }, { text: BTN_SET }], [{ text: BTN_AD }, { text: BTN_TOOLS }], [{ text: BTN_DONATE }]], resize_keyboard: true, is_persistent: false, one_time_keyboard: true };
 const authorOf = (env) => env.AUTHOR || "@Shehroz_hoca";
 
 // Buyruqlar menyusi: hamma uchun va faqat muallif uchun
@@ -51,6 +52,8 @@ const USER_COMMANDS = [
   { command: "hisobot", description: "📈 Hisobot — guruh testlari va o'quvchilar" },
   { command: "guide", description: "📖 Yo'riqnoma — botdan foydalanish" },
   { command: "namuna", description: "📄 Namunalar — test fayli qanday bo'ladi" },
+  { command: "titul", description: "📄 Titul va varaq — chop etish va tekshirish" },
+  { command: "markaz", description: "🏫 Markaz — titul uchun nom va logotip" },
   { command: "vositalar", description: "🧰 Fayl vositalari — PDF, CSV, TXT" },
   { command: "yozish", description: "💬 Muallifga yozish — bot orqali xabar" },
   { command: "author", description: "👨‍🏫 Muallif — savol va takliflar" },
@@ -401,7 +404,7 @@ export class Store extends DurableObject {
   }
   searchQuizzes(owner, q) {
     return this.sql.exec(
-      "SELECT id,title,count,timer,description FROM quizzes WHERE owner=? AND title LIKE ? ORDER BY created DESC LIMIT 20",
+      "SELECT id,title,count,timer,description,public,chanMsg,chanReq,status FROM quizzes WHERE owner=? AND title LIKE ? ORDER BY created DESC LIMIT 200",
       owner, `%${q}%`).toArray();
   }
   deleteQuiz(id, owner) {
@@ -1195,7 +1198,7 @@ export class Chat extends DurableObject {
     }
     // Muallif reklama postini yuboryapti
     // Muallif bilan yozishma: foydalanuvchi xabari muallifga, muallif javobi foydalanuvchiga
-    if (isPrivate && !text.startsWith("/") && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE, BTN_TOOLS].includes(text)) {
+    if (isPrivate && !text.startsWith("/") && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE, BTN_TOOLS, BTN_OMR].includes(text)) {
       const replyTo = this.isAuthor(m.from) ? await this.st.get("awaitReply") : null;
       if (replyTo) return this.sendSupportReply(m, replyTo);
       if (await this.st.get("awaitSupport")) return this.forwardToAuthor(m);
@@ -1217,6 +1220,8 @@ export class Chat extends DurableObject {
         reply_markup: kb([[btn("📤 Post qilib yuborish", "admode:send")], [btn("📌 Yuborish va tepaga qadash", "admode:pin")], [btn("❌ Bekor qilish", "ad:cancel")]]) });
     }
     // Kanalda so'rovnoma: foydalanuvchi kanal manzilini yozdi yoki kanaldan post forward qildi
+    if (isPrivate && !text.startsWith("/") && (m.photo || (m.text && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE, BTN_TOOLS, BTN_OMR].includes(text)))
+      && ((await this.st.get("awaitBrand")) || 0) > Date.now()) return this.brandInput(m);
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitCpost"))) return this.cpostChannel(m);
     // Javob varaqasini tekshirish rejimi: surat kelsa — skaner qilamiz
     if (isPrivate && (m.photo || /^image\//.test(m.document?.mime_type || "")) && (await this.st.get("awaitScan"))) return this.scanPhoto(m);
@@ -1241,6 +1246,10 @@ export class Chat extends DurableObject {
         case "author":
         case "muallif":
           return this.sendAuthor();
+        case "titul":
+          return isPrivate ? this.omrList(m.from.id, 0) : null;
+        case "markaz":
+          return isPrivate ? this.brandMenu() : null;
         case "vositalar":
         case "tools":
           return isPrivate ? this.toolsMenu() : null;
@@ -1376,12 +1385,13 @@ export class Chat extends DurableObject {
           await this.st.delete("awaitDonate");
           await this.st.delete("awaitCpost");
           await this.st.delete("awaitScan");
+          await this.st.delete("awaitBrand");
           await this.st.delete("awaitMat");
           await this.st.delete("create");
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · Mini App 6 (to'liq menyu)</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v7 (bot = ilova)</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -1409,6 +1419,7 @@ export class Chat extends DurableObject {
     if (text === BTN_REVIEW) return this.reviewMenu(m.from.id);
     if (text === BTN_DONATE) return this.donateMenu();
     if (text === BTN_TOOLS) return this.toolsMenu();
+    if (text === BTN_OMR) return isPrivate ? this.omrList(m.from.id, 0) : null;
     if (text === BTN_AD) return this.isAuthor(m.from) ? this.adMenu() : this.adContact();
     if (!text) return;
 
@@ -1855,7 +1866,7 @@ export class Chat extends DurableObject {
       const act = r.status === "pending" ? null
         : author ? btn(r.public ? "🔒 Kanaldan yashirish" : "📢 Kanalga chiqarish", `pub:${r.id}:${page}`)
         : btn(r.chanMsg ? "🔕 Kanaldan olib tashlash" : r.chanReq ? "↩️ So'rovni bekor qilish" : "📢 Kanalga chiqarish", `chan:${r.id}:${page}`);
-      kbRows.push(act ? [act, btn("🗑 O'chirish", `mdel:${r.id}:${page}`)] : [btn("🗑 O'chirish", `mdel:${r.id}:${page}`)]);
+      kbRows.push(act ? [act, btn("📄", `om:${r.id}`), btn("🗑", `mdel:${r.id}:${page}`)] : [btn("🗑 O'chirish", `mdel:${r.id}:${page}`)]);
     }
     const nav = [];
     if (page > 0) nav.push(btn("⬅️ Oldingi", `mypg:${page - 1}`));
@@ -1864,7 +1875,7 @@ export class Chat extends DurableObject {
     kbRows.push([btn(author ? "📢 Hammasini kanalga chiqarish" : "📢 Hammasini kanalga so'rash", "mbulk:pub"), btn(author ? "🔒 Hammasini yashirish" : "🔕 Hammasini kanaldan olish", "mbulk:hide")]);
     kbRows.push([btn(`🗑 Hammasini o'chirish (${total})`, "mdall")]);
     const text = `📚 <b>Sizning testlaringiz</b> (${total} ta)` + (pages > 1 ? ` — ${page + 1}/${pages}-sahifa` : "") +
-      "\n\nTestni ochish uchun nomini bosing. Ostidagi tugmalar: 📢 kanalga chiqarish / yashirish, 🗑 o'chirish." +
+      "\n\nTestni ochish uchun nomini bosing. Ostidagi tugmalar: 📢 kanalga chiqarish / yashirish, 📄 titul va varaq, 🗑 o'chirish." +
       `\n<i>📢 — kanalda${this.isAuthor(this.from) ? " (hammaga ochiq)" : ""}${this.isAuthor(this.from) ? "" : " · 🕓 — muallif tasdig'ini kutmoqda"} · 🎲 — faqat sizda</i>`;
     return editId ? this.edit(editId, text, { reply_markup: kb(kbRows) }) : this.send(text, { reply_markup: kb(kbRows) });
   }
@@ -2616,7 +2627,7 @@ export class Chat extends DurableObject {
     }
 
     // Titul, yuklab olish, varaqni tekshirish
-    if (["ts", "dl", "dlf", "sc", "scx", "sr", "scd"].includes(kind)) return this.omrCallback(kind, val, msgId, uid, answer);
+    if (["ts", "dl", "dlf", "sc", "scx", "sr", "scd", "om", "omp", "br"].includes(kind)) return this.omrCallback(kind, val, msgId, uid, answer);
 
     // Kanalda so'rovnoma (viktorina) joylash
     if (kind === "cp" || kind === "cpi" || kind === "cpgo" || kind === "cpx") return this.cpostCallback(kind, val, msgId, uid, answer);
@@ -2716,8 +2727,90 @@ export class Chat extends DurableObject {
     await this.store().setQuestions(quiz.id, quiz.owner, qs);
     return qs;
   }
+  // «📄 Titul va varaq» — testni tanlash ro'yxati
+  async omrList(uid, page = 0, editId) {
+    const PER = 10, store = this.store();
+    const total = await store.countQuizzes(uid);
+    if (!total) {
+      const t = "📄 <b>Titul va varaq</b>\n\nHali testingiz yo'q. Avval test tuzing: fayl yuboring yoki /newquiz";
+      return editId ? this.edit(editId, t) : this.send(t);
+    }
+    const pages = Math.ceil(total / PER);
+    page = Math.min(Math.max(0, page), pages - 1);
+    const list = await store.listQuizzes(uid, page * PER, PER);
+    const rows = list.filter((r) => r.status !== "pending").map((r) => [btn(`📄 ${r.title} · ${r.count}`.slice(0, 60), `om:${r.id}`)]);
+    const nav = [];
+    if (page > 0) nav.push(btn("⬅️ Oldingi", `omp:${page - 1}`));
+    if (pages > 1) nav.push(btn(`${page + 1}/${pages}`, `omp:${page}`));
+    if (page < pages - 1) nav.push(btn("Keyingi ➡️", `omp:${page + 1}`));
+    if (nav.length) rows.push(nav);
+    rows.push([btn("🏫 Markaz nomi va logotipi", "br:menu")]);
+    const text = `📄 <b>Titul va varaq</b> (${total} ta test)\n\nTestni tanlang:\n• titul (javob varaqasi) va savollar varag'ini olish\n• savollarni PDF, Word, Excel, TXT da yuklab olish\n• to'ldirilgan varaqni suratdan tekshirish va natijalar`;
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async omrTestMenu(quiz, editId) {
+    const n = Math.min(quiz.questions?.length || quiz.count, 100);
+    const scans = (await this.store().listScans(quiz.id, quiz.owner)).length;
+    const text = `📄 <b>${esc(quiz.title)}</b>\n🖊 ${quiz.questions?.length || quiz.count} ta savol${(quiz.questions?.length || quiz.count) > 100 ? " (titulga birinchi 100 tasi sig'adi)" : ""}` +
+      (scans ? `\n📋 Tekshirilgan varaqlar: ${scans} ta` : "");
+    const reply_markup = kb([[btn("📄 Titul olish", `ts:${quiz.id}`), btn("📥 Yuklab olish", `dl:${quiz.id}`)],
+      [btn("📷 Varaqni tekshirish", `sc:${quiz.id}`), btn(`📋 Natijalar${scans ? ` (${scans})` : ""}`, `sr:${quiz.id}`)],
+      [btn("⬅️ Testlar ro'yxati", "omp:0"), btn("🎲 Test kartasi", `open:${quiz.id}`)]]);
+    return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
+  }
+  // 🏫 Markaz nomi va logotipi (titul va savollar varag'i shapkasi) — ilova bilan umumiy
+  async brandMenu(editId) {
+    const b = await this.brand(this.from?.id || this.chatId);
+    await this.st.put("awaitBrand", Date.now() + 10 * 60e3);
+    const text = "🏫 <b>Markaz nomi va logotipi</b>\n\nTitul va savollar varag'i tepasida chiqadi (ixtiyoriy).\n\n" +
+      `Nomi: <b>${b?.name ? esc(b.name) : "—"}</b>\nLogotip: ${b?.logo ? "✅ bor" : "—"}\n\n` +
+      "✏️ Nomni o'zgartirish — <b>matn</b> yuboring\n🖼 Logotip — <b>rasm</b> yuboring\n\nTugatish: /cancel";
+    const rows = [];
+    if (b?.name || b?.logo) rows.push([btn("🗑 Nomni o'chirish", "br:noname"), btn("🗑 Logotipni o'chirish", "br:nologo")]);
+    rows.push([btn("✅ Tayyor", "br:done")]);
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async saveBrand(uid, patch) {
+    const b = { ...((await this.brand(uid)) || { name: "", logo: null }), ...patch };
+    await this.store().setSetting("brand:" + uid, b.name || b.logo ? JSON.stringify(b) : "");
+  }
+  async brandInput(m) {
+    const uid = m.from.id;
+    if (m.photo) {
+      const ph = m.photo.find((p) => p.width >= 240) || m.photo.at(-1);
+      const bytes = await this.downloadTg(ph.file_id);
+      if (bytes.length > 140000) return this.send("❗ Rasm juda katta. Kichikroq logotip yuboring.");
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      await this.saveBrand(uid, { logo: { t: "jpg", d: btoa(bin) } });
+      await this.send("✅ Logotip saqlandi.");
+      return this.brandMenu();
+    }
+    const t = (m.text || "").trim();
+    if (!t) return this.send("Matn (markaz nomi) yoki rasm (logotip) yuboring. Tugatish: /cancel");
+    if (await this.rejectLinks([t])) return;
+    await this.saveBrand(uid, { name: t.slice(0, 80) });
+    await this.send("✅ Markaz nomi saqlandi.");
+    return this.brandMenu();
+  }
   async omrCallback(kind, val, msgId, uid, answer) {
     const store = this.store();
+    if (kind === "omp") { await answer(); return this.omrList(uid, +val || 0, msgId); }
+    if (kind === "br") {
+      await answer();
+      if (val === "menu") return this.brandMenu();
+      if (val === "done") { await this.st.delete("awaitBrand"); return this.edit(msgId, "✅ Saqlandi. Titul olish: /titul"); }
+      if (val === "noname") await this.saveBrand(uid, { name: "" });
+      if (val === "nologo") await this.saveBrand(uid, { logo: null });
+      return this.brandMenu(msgId);
+    }
+    if (kind === "om") {
+      const q = await store.getQuiz(val);
+      if (!q || q.owner !== uid) return answer("Test topilmadi", true);
+      if (q.status === "pending") return answer("⏳ Test tekshiruvda", true);
+      await answer();
+      return this.omrTestMenu(q);
+    }
     if (kind === "scd") {
       await store.delScan(Number(val), uid);
       await answer("🗑 O'chirildi");
@@ -2744,7 +2837,7 @@ export class Chat extends DurableObject {
       const n = Math.min(qs.length, 100), k = Math.min(5, Math.max(2, ...qs.slice(0, 100).map((q) => q.opts.length)));
       await this.sendFile(await answerSheetPdf({ title: quiz.title, n, k, author, brand }), `${name} - titul.pdf`,
         `📄 <b>Titul (javob varaqasi)</b> — ${n} ta savol, A–${LETTERS[k - 1]}.\nHar bir o'quvchiga bitta varaq chop eting.` +
-        (brand?.name ? "" : "\n\n🏫 Markazingiz nomi va logotipini titulga qo'shish: ilova → test → 📄 Varaq."), "application/pdf");
+        (brand?.name || brand?.logo ? "" : "\n\n🏫 Markaz nomi va logotipini qo'shish: /markaz"), "application/pdf");
       await this.sendFile(await questionsPdf({ title: quiz.title, description: quiz.description, questions: qs, k, author, brand }), `${name} - savollar.pdf`,
         "📝 <b>Savollar varag'i.</b> Oxirgi sahifada javoblar kaliti bor — uni o'quvchilarga bermang.", "application/pdf");
       return this.send("Varaqlar to'ldirilgach, ularni shu yerda tekshirasiz:", { reply_markup: kb([[btn("📷 Varaqni tekshirish", `sc:${id}`)]]) });
@@ -3166,6 +3259,42 @@ export class Chat extends DurableObject {
       for (const mid of res.posts) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: mid });
     for (const k of ["sess", "create", "edit", "retry", "reg", "awaitAd", "adDraft", "awaitMat", "pendingStart", "app", "appRetry", "src", "book"]) await this.st.delete(k);
     return { ok: true, quizzes: res.quizzes };
+  }
+
+  // Ilovadan: kanalga joylash / so'rov / olib tashlash (muallif uchun — hammaga ko'rsatish)
+  async appChan(from, id) {
+    this.chatId = from.id; this.from = from;
+    const store = this.store(), uid = from.id;
+    const quiz = await store.getQuiz(id);
+    if (!quiz || quiz.owner !== uid) return { error: "Faqat test egasi uchun" };
+    if (quiz.status === "pending") return { error: "⏳ Test tekshiruvda" };
+    if (this.isAuthor(from)) {
+      const on = !quiz.public;
+      await store.setPublic(quiz.id, on);
+      if (on) { await this.postToChannel(quiz, from); return { ok: true, msg: "🌐 Endi hammaga ko'rinadi va kanalga joylandi" }; }
+      if (quiz.chanMsg && this.env.TESTS_CHANNEL) await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+      await store.setChanMsg(quiz.id, null);
+      return { ok: true, msg: "🔒 Obunachilardan yashirildi" };
+    }
+    if (!this.env.TESTS_CHANNEL) return { error: "Kanal sozlanmagan" };
+    if (quiz.chanMsg) {
+      await tg(this.env, "deleteMessage", { chat_id: this.env.TESTS_CHANNEL, message_id: quiz.chanMsg });
+      await store.setChanMsg(quiz.id, null);
+      return { ok: true, msg: "🔕 Kanaldan olib tashlandi" };
+    }
+    if (quiz.chanReq) { await store.setChanReq(quiz.id, null); return { ok: true, msg: "↩️ So'rov bekor qilindi" }; }
+    const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || "obunachi";
+    await store.setChanReq(quiz.id, name);
+    const admin = await this.adminChat();
+    if (admin) {
+      const n = quiz.questions?.length || quiz.count;
+      const smp = (quiz.questions || []).slice(0, 5).map((q, i) => `${i + 1}. ${esc(q.q.slice(0, 100))} — <i>${esc(String(q.opts?.[q.correct] ?? "").slice(0, 60))}</i>`).join("\n");
+      await tg(this.env, "sendMessage", { chat_id: admin, parse_mode: "HTML",
+        text: `📢 <b>Kanalga chiqarish so'rovi</b>\n\n🎲 <b>${esc(quiz.title)}</b>\n` + (quiz.description ? `<i>${esc(quiz.description)}</i>\n` : "") +
+          `🖊 ${n} ta savol\n👤 Tuzuvchi: ${esc(name)}${from.username ? ` (@${esc(from.username)})` : ""}\n\n<b>Savollardan namuna:</b>\n${smp}`,
+        reply_markup: kb([[btn("✅ Kanalga chiqarish", `chq:ok:${quiz.id}`), btn("❌ Rad etish", `chq:no:${quiz.id}`)], [btn("👁 Testni ochish", `open:${quiz.id}`)]]) });
+    }
+    return { ok: true, msg: "📨 So'rov muallifga yuborildi. Tasdiqlangach test kanalda chiqadi." };
   }
 
   async getCpost() {

@@ -134,7 +134,7 @@ export async function handleApp(req, env, url, store, h) {
   if (path === "/quizzes" && req.method === "GET") {
     const q = str(url.searchParams.get("q"), 60);
     const off = Math.max(0, parseInt(url.searchParams.get("offset"), 10) || 0);
-    const rows = q ? await store.searchQuizzes(uid, q) : await store.listQuizzes(uid, off, 50);
+    const rows = q ? await store.searchQuizzes(uid, q) : await store.listQuizzes(uid, off, 100);
     const total = q ? rows.length : await store.countQuizzes(uid);
     return json({ total, items: rows.map((r) => ({ id: r.id, title: r.title, count: r.count, public: !!r.public,
       chan: !!r.chanMsg, req: !!r.chanReq, pending: r.status === "pending" })) });
@@ -198,8 +198,9 @@ export async function handleApp(req, env, url, store, h) {
   // ---------- O'quvchi tomoni: test yechish ----------
   if (path === "/catalog" && req.method === "GET") {
     const authorId = await store.getSetting("authorId");
-    const pub = authorId ? await store.catalog(+authorId, 0, 100) : [];
-    const mine = String(uid) === String(authorId) ? [] : (await store.listQuizzes(uid, 0, 50)).filter((r) => r.status !== "pending");
+    const isAuth = String(uid) === String(authorId);
+    const pub = authorId && !isAuth ? await store.catalog(+authorId, 0, 500) : [];
+    const mine = (await store.listQuizzes(uid, 0, 1000)).filter((r) => r.status !== "pending");
     const pick = (r) => ({ id: r.id, title: r.title, count: r.count });
     return json({ author: env.AUTHOR || "@Shehroz_hoca", pub: pub.map(pick), mine: mine.map(pick) });
   }
@@ -240,7 +241,7 @@ export async function handleApp(req, env, url, store, h) {
     const questions = quiz.questions?.length ? quiz.questions : buildQuestions(quiz.pairs, quiz.count, quiz.direction || "fwd", quiz.pairs, true);
     return json({ id: quiz.id, title: quiz.title, description: quiz.description || "", timer: quiz.timer || 30,
       shuffle: quiz.shuffle || "all", pending: quiz.status === "pending", questions,
-      timers: TIMERS, bot: env.BOT_NAME || null });
+      timers: TIMERS, bot: await h.botName(env), author, public: !!quiz.public, chanMsg: !!quiz.chanMsg, chanReq: !!quiz.chanReq, channel: !!env.TESTS_CHANNEL });
   }
 
   if (path === "/quiz" && req.method === "POST") {
@@ -390,6 +391,10 @@ export async function handleApp(req, env, url, store, h) {
     return json(r.ok ? { ok: true } : { error: "Faylni yuborib bo'lmadi" }, r.ok ? 200 : 400);
   }
 
+  if (path === "/chan" && req.method === "POST") {
+    const r = await h.chat(uid).appChan(user, id);
+    return json(r, r.error ? 400 : 200);
+  }
   if (path === "/delete" && req.method === "POST") {
     if (quiz.chanMsg && env.TESTS_CHANNEL)
       await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/deleteMessage`, { method: "POST",
