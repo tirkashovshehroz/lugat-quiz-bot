@@ -5,6 +5,8 @@ import { parseFile, parseText, xlsxSheets } from "./parse.js";
 import { pdfToLines } from "./pdf.js";
 import { omrLayout, omrScan, omrHomography, toGray, gradeAnswers, answerSheetPdf, questionsPdf, resultsCsv, LETTERS } from "./omr.js";
 import { decodeJpeg } from "./jpeg.js";
+import { mergePdfs, splitPdf, extractPages, removePages, organizePdf, reversePdf, rotatePdf, addPageNumbers, addWatermark, cropPdf,
+  imagesToPdf, extractImages, compressPdf, repairPdf, makeZip, parseRanges, pageCount } from "./pdftools.js";
 import { tr, trMarkup, fromButton, LANGS, detectLang, trCommands } from "./i18n.js";
 
 const MAX_FILE = 20 * 1024 * 1024;
@@ -261,6 +263,89 @@ function prepare(questions, mode = "all") {
 function quizQuestions(quiz) {
   return quiz.questions?.length ? quiz.questions : buildQuestions(quiz.pairs, quiz.count, quiz.direction || "fwd");
 }
+
+// ---------------- 🧰 Fayl vositalari: ro'yxat, sozlamalar va bajarilishi ----------------
+const MIME = { pdf: "application/pdf", zip: "application/zip", jpg: "image/jpeg", txt: "text/plain", csv: "text/csv", doc: "application/msword" };
+const rangeCheck = (v, tool) => { try { parseRanges(v, tool.pages); return null; } catch (e) { return e.message; } };
+const RANGE_HELP = "Masalan: <code>1-3, 5, 8-10</code> · <code>5-</code> — 5-dan oxirigacha";
+const TOOLS = {
+  merge: { title: "📎 <b>PDF birlashtirish</b>", icon: "📎", input: "pdf", multi: true, min: 2, go: "Birlashtirish",
+    ask: "PDF fayllarni birlashtirish tartibida yuboring (kamida 2 ta). Tugatgach «✅ Birlashtirish» ni bosing.",
+    run: async (o, get) => { const r = await mergePdfs(await get());
+      return { ...r, suffix: "_birlashtirilgan", caption: `✅ ${r.pages} sahifa` + (r.skipped ? ` · ⚠️ ${r.skipped} ta fayl o'qilmadi` : "") }; } },
+  split: { title: "✂️ <b>PDF'ni bo'lish</b>", icon: "✂️", input: "pdf", needPages: true, ask: "PDF faylni yuboring — uni bir nechta faylga bo'lamiz.",
+    steps: [{ key: "mode", q: "Qanday bo'lamiz?", choices: [[["📄 Har sahifa alohida", "each"]], [["2 tadan", "every:2"], ["5 tadan", "every:5"], ["10 tadan", "every:10"]],
+      [["✏️ Oraliqlarni o'zim yozaman", "__text"]]], textQ: `✏️ Har bir faylga tushadigan sahifalarni yozing — har oraliq alohida fayl bo'ladi.\n${RANGE_HELP}`, check: rangeCheck }],
+    run: async (o, get) => {
+      const isRange = !/^(each|every:\d+)$/.test(o.mode);
+      const r = await splitPdf((await get())[0], isRange ? "ranges" : o.mode, o.mode);
+      return { files: r.files.map((f) => ({ bytes: f.bytes, name: `sahifa_${f.label}.pdf` })), zipSuffix: "_bolingan", caption: `✅ ${r.files.length} ta faylga bo'lindi` }; } },
+  extract: { title: "📤 <b>Sahifalarni ajratib olish</b>", icon: "📤", input: "pdf", needPages: true, ask: "PDF faylni yuboring.",
+    steps: [{ key: "r", text: true, q: `Qaysi sahifalar kerak? Ular bitta yangi PDF bo'ladi.\n${RANGE_HELP}`, check: rangeCheck }],
+    run: async (o, get) => { const r = await extractPages((await get())[0], o.r); return { ...r, suffix: "_ajratilgan", caption: `✅ ${r.pages} sahifa ajratildi` }; } },
+  remove: { title: "🗑 <b>Sahifalarni o'chirish</b>", icon: "🗑", input: "pdf", needPages: true, ask: "PDF faylni yuboring.",
+    steps: [{ key: "r", text: true, q: `Qaysi sahifalarni o'chiramiz?\n${RANGE_HELP}`, check: rangeCheck }],
+    run: async (o, get) => { const r = await removePages((await get())[0], o.r); return { ...r, suffix: "_tozalangan", caption: `✅ ${r.removed} sahifa o'chirildi, ${r.pages} ta qoldi` }; } },
+  organize: { title: "🔀 <b>Sahifalar tartibini o'zgartirish</b>", icon: "🔀", input: "pdf", needPages: true, ask: "PDF faylni yuboring.",
+    steps: [{ key: "r", text: true, q: "Yangi tartibni yozing. Masalan: <code>3, 1, 2, 4-10</code>\nYozilmagan sahifalar oxiriga o'z tartibida qo'shiladi.", check: rangeCheck }],
+    run: async (o, get) => { const r = await organizePdf((await get())[0], o.r); return { ...r, suffix: "_tartiblangan", caption: `✅ ${r.pages} sahifa yangi tartibda` }; } },
+  reverse: { title: "🔃 <b>Teskari tartib</b>", icon: "🔃", input: "pdf", ask: "PDF faylni yuboring — sahifalar oxiridan boshiga qarab joylanadi.",
+    run: async (o, get) => { const r = await reversePdf((await get())[0]); return { ...r, suffix: "_teskari", caption: `✅ ${r.pages} sahifa teskari tartibda` }; } },
+  compress: { title: "🗜 <b>PDF hajmini kichraytirish</b>", icon: "🗜", input: "pdf", ask: "PDF faylni yuboring. Ichidagi rasmlar siqiladi — skanerlangan va rasmli PDF'larda ayniqsa foydali.",
+    steps: [{ key: "lvl", q: "Qanchalik siqamiz?", choices: [[["🟢 Kam (sifat yuqori)", "low"]], [["🟡 O'rtacha (tavsiya)", "mid"]], [["🔴 Kuchli (hajm eng kichik)", "high"]]] }],
+    run: async (o, get) => { const src = (await get())[0]; const r = await compressPdf(src, o.lvl);
+      const pct = Math.max(0, Math.round((1 - r.bytes.length / src.length) * 100));
+      if (r.bytes.length >= src.length) return { bytes: src, suffix: "", caption: "ℹ️ Bu faylni bundan ortiq kichraytirib bo'lmadi (rasmlari allaqachon siqilgan yoki faqat matndan iborat)." };
+      return { bytes: r.bytes, suffix: "_siqilgan", caption: `✅ ${(src.length / 1048576).toFixed(1)} MB → <b>${(r.bytes.length / 1048576).toFixed(1)} MB</b> (−${pct}%)` + (r.skipped ? `\n<i>${r.skipped} ta rasm o'zgarishsiz qoldi.</i>` : "") }; } },
+  repair: { title: "🩹 <b>PDF'ni tiklash</b>", icon: "🩹", input: "pdf", ask: "Ochilmayotgan yoki xato beradigan PDF faylni yuboring — butun sahifalarini yangi faylga ko'chirib beramiz.",
+    run: async (o, get) => { const r = await repairPdf((await get())[0]); return { ...r, suffix: "_tiklangan", caption: `✅ ${r.pages} sahifa tiklandi` + (r.lost ? ` · ⚠️ ${r.lost} ta sahifani tiklab bo'lmadi` : "") }; } },
+  img: { title: "🖼 <b>Rasm → PDF</b>", icon: "🖼", input: "img", multi: true, go: "PDF yaratish",
+    ask: "Rasmlarni yuboring (JPG yoki PNG, bir nechtasini birdaniga ham bo'ladi). PDF'da rasmlar yuborilgan tartibda bo'ladi. Tugatgach «✅ PDF yaratish» ni bosing.",
+    steps: [{ key: "orient", q: "📄 Sahifa yo'nalishi:", choices: [[["🔄 Avtomatik", "auto"]], [["▯ Portret (tik)", "portrait"], ["▭ Albom (yotiq)", "landscape"]], [["🖼 Rasm o'lchamida", "fit"]]] },
+      { key: "margin", q: "⬜ Chetlardan bo'sh joy:", choices: [[["Chetsiz", "0"], ["Kichik", "20"], ["Katta", "40"]]] }],
+    run: async (o, get) => { const r = await imagesToPdf(await get(), { orient: o.orient === "fit" ? "auto" : o.orient, size: o.orient === "fit" ? "fit" : "a4", margin: +o.margin || 0 });
+      return { ...r, suffix: "_rasmlar", caption: `✅ ${r.pages} sahifa` + (r.skipped ? ` · ⚠️ ${r.skipped} ta rasm o'qilmadi` : "") }; } },
+  imgs: { title: "🏞 <b>PDF → rasmlar</b>", icon: "🏞", input: "pdf", ask: "PDF faylni yuboring — ichidagi JPG rasmlarni chiqarib beramiz (skanerlangan PDF'lar sahifalari ham shu yo'l bilan olinadi).",
+    run: async (o, get) => { const list = await extractImages((await get())[0]);
+      return { files: list.map((x, i) => ({ bytes: x.bytes, name: `rasm_${String(i + 1).padStart(2, "0")}.jpg` })), zipSuffix: "_rasmlar",
+        empty: "PDF ichida JPG rasm topilmadi.", caption: `✅ ${list.length} ta rasm` }; } },
+  word: { title: "📝 <b>PDF → Word</b>", icon: "📝", input: "pdf", ask: "PDF faylni yuboring — ichidagi matn tahrirlanadigan Word (.doc) fayl qilib beriladi.\n<i>Faqat matn o'tadi: rasm, jadval va bezaklar o'tmaydi.</i>",
+    run: async (o, get) => { const lines = await pdfToLines((await get())[0]);
+      if (!lines.join("").trim()) throw new Error("PDF ichida matn topilmadi — u skanerlangan (rasm) bo'lishi mumkin");
+      const e = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+      const html = `<html><head><meta charset="utf-8"><style>body{font-family:Calibri,Arial;font-size:12pt}p{margin:0 0 4pt}</style></head><body>${lines.map((l) => `<p>${e(l) || "&nbsp;"}</p>`).join("")}</body></html>`;
+      return { bytes: new TextEncoder().encode(html), ext: "doc", caption: `✅ ${lines.length} qator matn Word faylida` }; } },
+  txt: { title: "📄 <b>PDF → TXT</b>", icon: "📄", input: "pdf", ask: "PDF faylni yuboring — ichidagi matn .txt fayl qilib qaytariladi.",
+    run: async (o, get) => { const lines = await pdfToLines((await get())[0]); const text = lines.join("\n").trim();
+      if (!text) throw new Error("PDF ichida matn topilmadi — u skanerlangan (rasm) bo'lishi mumkin");
+      return { bytes: new TextEncoder().encode("﻿" + text), ext: "txt", caption: `✅ ${lines.length} qator matn` }; } },
+  rotate: { title: "🔄 <b>PDF'ni aylantirish</b>", icon: "🔄", input: "pdf", needPages: true, ask: "PDF faylni yuboring.",
+    steps: [{ key: "a", q: "Qaysi tomonga aylantiramiz?", choices: [[["↻ 90° o'ngga", "90"], ["↺ 90° chapga", "270"]], [["🔃 180°", "180"]]] },
+      { key: "r", q: "Qaysi sahifalarni?", choices: [[["📄 Hammasini", "all"]], [["✏️ Faqat ba'zilarini", "__text"]]], textQ: `Qaysi sahifalarni aylantiramiz?\n${RANGE_HELP}`, check: rangeCheck }],
+    run: async (o, get) => { const r = await rotatePdf((await get())[0], +o.a, o.r === "all" ? null : o.r); return { ...r, suffix: "_aylantirilgan", caption: `✅ ${r.pages} sahifa aylantirildi` }; } },
+  pagenum: { title: "🔢 <b>Sahifa raqamlari</b>", icon: "🔢", input: "pdf", ask: "PDF faylni yuboring.",
+    steps: [{ key: "pos", q: "Raqam qayerda tursin?", choices: [[["⬇️ Pastda, o'rtada", "bc"], ["↘️ Pastda, o'ngda", "br"]], [["⬆️ Tepada, o'rtada", "tc"], ["↗️ Tepada, o'ngda", "tr"]]] },
+      { key: "fmt", q: "Ko'rinishi:", choices: [[["1", "n"], ["1 / 10", "n/N"], ["1-sahifa", "page"]]] },
+      { key: "first", q: "Birinchi sahifa (muqova)ga ham qo'yamizmi?", choices: [[["✅ Ha", "yes"], ["❌ Yo'q, 2-sahifadan", "no"]]] }],
+    run: async (o, get) => { const r = await addPageNumbers((await get())[0], { pos: o.pos, fmt: o.fmt, skipFirst: o.first === "no" });
+      return { ...r, suffix: "_raqamlangan", caption: `✅ ${r.pages} sahifa raqamlandi` }; } },
+  watermark: { title: "💧 <b>Suv belgisi</b>", icon: "💧", input: "pdf", ask: "PDF faylni yuboring.",
+    steps: [{ key: "t", text: true, q: "Suv belgisi matnini yozing (masalan: markaz nomi yoki «NUSXA»).", check: (v) => (!v ? "Matn bo'sh" : v.length > 80 ? "80 belgidan oshmasin" : null) },
+      { key: "c", q: "Rangi:", choices: [[["⚪️ Kulrang", "grey"], ["🔵 Ko'k", "blue"], ["🔴 Qizil", "red"]]] },
+      { key: "dir", q: "Joylashuvi:", choices: [[["↗️ Qiya", "diag"], ["➡️ To'g'ri", "flat"]]] }],
+    run: async (o, get) => { const r = await addWatermark((await get())[0], o.t, { color: o.c, diagonal: o.dir !== "flat" });
+      return { ...r, suffix: "_suvbelgi", caption: `✅ ${r.pages} sahifaga suv belgisi qo'yildi` }; } },
+  crop: { title: "📐 <b>Chetlarni kesish</b>", icon: "📐", input: "pdf", ask: "PDF faylni yuboring — sahifalarning hamma tomonidan bir xil kesiladi.",
+    steps: [{ key: "mm", q: "Har tomondan qancha kesamiz?", choices: [[["5 mm", "5"], ["10 mm", "10"], ["15 mm", "15"], ["20 mm", "20"]], [["✏️ O'zim yozaman", "__text"]]],
+      textQ: "Necha millimetr kesamiz? Masalan: <code>12</code>", check: (v) => (/^\d{1,3}$/.test(v) && +v > 0 && +v <= 100 ? null : "1 dan 100 gacha son yozing") }],
+    run: async (o, get) => { const r = await cropPdf((await get())[0], +o.mm); return { ...r, suffix: "_kesilgan", caption: `✅ Har tomondan ${o.mm} mm kesildi` }; } },
+  csv: { title: "📊 <b>Excel → CSV</b>", icon: "📊", input: "xlsx", ask: "Excel faylni (.xlsx) yuboring. Har bir varaq alohida CSV fayl bo'ladi.",
+    run: async (o, get) => {
+      const sheets = (await xlsxSheets((await get())[0])).filter((sh) => sh.rows.some((r) => r.some((x) => x !== "")));
+      const q = (v) => /[",\n\r]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+      return { files: sheets.slice(0, 20).map((sh) => ({ bytes: new TextEncoder().encode("﻿" + sh.rows.map((r) => r.map(q).join(",")).join("\r\n")),
+        name: `${sh.name.replace(/[\\/:*?"<>|]/g, "_")}.csv` })), empty: "Faylda ma'lumot topilmadi.", caption: `✅ ${Math.min(sheets.length, 20)} ta varaq`, zipSuffix: "_csv" }; } },
+};
 
 // ---------------- Umumiy ombor ----------------
 export class Store extends DurableObject {
@@ -888,21 +973,32 @@ export class Chat extends DurableObject {
     return this.send(`👨‍🏫 Bot muallifi: <b>${esc(a)}</b>\n\nTaklif, savol yoki hamkorlik bo'yicha yozing 👇\n\n💬 <b>Bot orqali yozish</b> — xabaringiz muallifga shu bot orqali boradi, javob ham shu yerga keladi.`,
       { reply_markup: kb([[btn("💬 Bot orqali yozish", "sup:new")], [{ text: "✉️ Telegramda yozish", url: `https://t.me/${a.replace(/^@/, "")}` }]]) });
   }
-  // ---------- 🧰 Fayl vositalari (fayllar saqlanmaydi — faqat Telegram file_id lar vaqtincha) ----------
+  // ---------- 🧰 Fayl vositalari (iLovePDF kabi; fayllar saqlanmaydi — faqat Telegram file_id lar vaqtincha) ----------
   toolsMenu(editId) {
-    const text = "🧰 <b>Fayl vositalari</b>\n\nNimani qilamiz?\n\n🖼 <b>Rasmlardan PDF</b> — bir nechta JPG/PNG bitta PDF bo'ladi\n📎 <b>PDF birlashtirish</b> — bir nechta PDF bitta faylga\n📊 <b>Excel → CSV</b> — .xlsx jadvalni CSV qilish\n📄 <b>PDF → TXT</b> — PDF ichidagi matnni olish\n\n<i>Fayllar botda saqlanmaydi: natija yuborilgach hammasi o'chadi.</i>";
-    const reply_markup = kb([[btn("🖼 Rasmlardan PDF", "tl:img"), btn("📎 PDF birlashtirish", "tl:merge")], [btn("📊 Excel → CSV", "tl:csv"), btn("📄 PDF → TXT", "tl:txt")]]);
+    const text = "🧰 <b>Fayl vositalari</b> — bepul PDF vositalari\n\n" +
+      "📑 <b>Tartibga solish:</b> birlashtirish, bo'lish, sahifalarni ajratish yoki o'chirish, tartibini o'zgartirish\n" +
+      "⚡️ <b>Optimallashtirish:</b> PDF hajmini kichraytirish, buzilgan PDF'ni tiklash\n" +
+      "🔄 <b>O'girish:</b> rasm → PDF, PDF → rasm, PDF → Word/TXT, Excel → CSV\n" +
+      "✏️ <b>Tahrirlash:</b> aylantirish, sahifa raqami, suv belgisi, chetlarni kesish\n\n" +
+      "<i>Fayllar botda saqlanmaydi: natija yuborilgach hammasi o'chadi. Har bir fayl 20 MB gacha.</i>";
+    const reply_markup = kb([
+      [btn("📎 Birlashtirish", "tl:merge"), btn("✂️ Bo'lish", "tl:split")],
+      [btn("📤 Sahifalarni ajratish", "tl:extract"), btn("🗑 Sahifalarni o'chirish", "tl:remove")],
+      [btn("🔀 Tartibni o'zgartirish", "tl:organize"), btn("🔃 Teskari tartib", "tl:reverse")],
+      [btn("🗜 Hajmini kichraytirish", "tl:compress"), btn("🩹 PDF'ni tiklash", "tl:repair")],
+      [btn("🖼 Rasm → PDF", "tl:img"), btn("🏞 PDF → rasmlar", "tl:imgs")],
+      [btn("📝 PDF → Word", "tl:word"), btn("📄 PDF → TXT", "tl:txt")],
+      [btn("🔄 Aylantirish", "tl:rotate"), btn("🔢 Sahifa raqami", "tl:pagenum")],
+      [btn("💧 Suv belgisi", "tl:watermark"), btn("📐 Chetlarni kesish", "tl:crop")],
+      [btn("📊 Excel → CSV", "tl:csv")]]);
     return editId ? this.edit(editId, text, { reply_markup }) : this.send(text, { reply_markup });
   }
   async startTool(kind, editId) {
-    await this.st.put("tool", { kind, files: [], bytes: 0 });
-    const t = {
-      img: "🖼 <b>Rasmlardan PDF</b>\n\nRasmlarni yuboring (JPG yoki PNG, bir nechtasini birdaniga ham bo'ladi). PDF'da rasmlar yuborilgan tartibda bo'ladi.\nTugatgach «✅ PDF yaratish» ni bosing.",
-      merge: "📎 <b>PDF birlashtirish</b>\n\nPDF fayllarni birlashtirish tartibida yuboring (kamida 2 ta).\nTugatgach «✅ Birlashtirish» ni bosing.",
-      csv: "📊 <b>Excel → CSV</b>\n\nExcel faylni (.xlsx) yuboring. Har bir varaq alohida CSV fayl bo'ladi.",
-      txt: "📄 <b>PDF → TXT</b>\n\nPDF faylni yuboring — ichidagi matn .txt fayl qilib qaytariladi.",
-    }[kind];
-    return this.edit(editId, t + `\n\n<i>Har bir fayl 20 MB gacha, jami ${TOOL_MAX_FILES} tagacha.</i>`, { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) });
+    const T = TOOLS[kind];
+    if (!T) return this.toolsMenu(editId);
+    await this.st.put("tool", { kind, files: [], bytes: 0, opts: {} });
+    const t = `${T.title}\n\n${T.ask}` + (T.multi ? `\n\n<i>Har bir fayl 20 MB gacha, jami ${TOOL_MAX_FILES} tagacha.</i>` : "");
+    return this.edit(editId, t, { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) });
   }
   async downloadTg(fileId) {
     const f = await this.tgx("getFile", { file_id: fileId });
@@ -920,102 +1016,113 @@ export class Chat extends DurableObject {
   }
   async onToolInput(m) {
     const tool = await this.st.get("tool");
+    const T = TOOLS[tool.kind];
     const d = m.document;
-    const name = d?.file_name || "fayl";
+    const name = d?.file_name || "rasm.jpg";
     const size = d?.file_size || m.photo?.at(-1)?.file_size || 0;
     if (size > 20 * 1024 * 1024) return this.send("❗ Fayl 20 MB dan katta — Telegram botlarga bunday faylni yuklab olishga ruxsat bermaydi.");
     const isPdf = d && (/pdf/i.test(d.mime_type || "") || /\.pdf$/i.test(name));
     const isImg = m.photo || (d && (/^image\/(jpeg|png)/i.test(d.mime_type || "") || /\.(jpe?g|png)$/i.test(name)));
-    if (tool.kind === "img" || tool.kind === "merge") {
-      if (tool.kind === "img" && !isImg) return this.send("❗ Faqat JPG yoki PNG rasm yuboring.");
-      if (tool.kind === "merge" && !isPdf) return this.send("❗ Faqat PDF fayl yuboring.");
+    const isXlsx = d && /\.xlsx$/i.test(name);
+    const okType = T.input === "img" ? isImg : T.input === "xlsx" ? isXlsx : isPdf;
+    if (!okType) return this.send(T.input === "img" ? "❗ JPG yoki PNG rasm yuboring." : T.input === "xlsx"
+      ? "❗ .xlsx fayl yuboring. Eski .xls bo'lsa, Excel'da «Saqlash → .xlsx» qiling." : "❗ PDF fayl yuboring.");
+    if (tool.step && !T.multi) return this.send("ℹ️ Fayl allaqachon qabul qilingan. Yuqoridagi savolga javob bering yoki /cancel");
+    const file = { id: m.photo ? m.photo.at(-1).file_id : d.file_id, name };
+    if (T.multi) {
       if (tool.files.length >= TOOL_MAX_FILES) return this.send(`❗ Eng ko'pi ${TOOL_MAX_FILES} ta fayl.`);
-      if (tool.bytes + size > TOOL_MAX_BYTES) return this.send("❗ Fayllar jami hajmi juda katta (45 MB gacha). Shu yergacha birlashtiring.");
-      tool.files.push({ id: m.photo ? m.photo.at(-1).file_id : d.file_id, name });
+      if (tool.bytes + size > TOOL_MAX_BYTES) return this.send("❗ Fayllar jami hajmi juda katta (45 MB gacha). Shu yergacha bajaring.");
+      tool.files.push(file);
       tool.bytes += size;
       if (tool.status) await this.tgx("deleteMessage", { chat_id: this.chatId, message_id: tool.status });
       const n = tool.files.length;
-      const go = tool.kind === "img" ? `✅ PDF yaratish (${n})` : `✅ Birlashtirish (${n})`;
-      const r = await this.send(`${tool.kind === "img" ? "🖼" : "📎"} Qabul qilindi: <b>${n}</b> ta. Yana yuboring yoki tugating.`,
-        { reply_markup: kb([[btn(go, "tl:go")], [btn("❌ Bekor qilish", "tl:cancel")]]) });
+      const r = await this.send(`${T.icon} Qabul qilindi: <b>${n}</b> ta. Yana yuboring yoki tugating.`,
+        { reply_markup: kb([[btn(`✅ ${T.go} (${n})`, "tl:go")], [btn("❌ Bekor qilish", "tl:cancel")]]) });
       tool.status = r.result?.message_id;
       await this.st.put("tool", tool);
       return;
     }
-    // Bitta faylli vositalar
-    await this.st.delete("tool");
-    try {
-      if (tool.kind === "csv") {
-        if (!/\.xlsx$/i.test(name)) return this.send("❗ .xlsx fayl yuboring. Eski .xls bo'lsa, Excel'da «Saqlash → .xlsx» qiling. /vositalar");
-        await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
-        const sheets = (await xlsxSheets(await this.downloadTg(d.file_id))).filter((sh) => sh.rows.some((r) => r.some((x) => x !== "")));
-        if (!sheets.length) return this.send("❗ Faylda ma'lumot topilmadi.");
-        const base = name.replace(/\.[^.]+$/, "");
-        const q = (v) => /[",\n\r]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
-        for (const sh of sheets.slice(0, 10)) {
-          const csv = "\ufeff" + sh.rows.map((r) => r.map(q).join(",")).join("\r\n");
-          await this.sendFile(new TextEncoder().encode(csv), `${base}${sheets.length > 1 ? "_" + sh.name.replace(/[\\/:*?"<>|]/g, "_") : ""}.csv`,
-            `📊 ${esc(sh.name)} — ${sh.rows.length} qator`, "text/csv");
-        }
-        return this.send("✅ Tayyor. Yana: /vositalar");
-      }
-      if (tool.kind === "txt") {
-        if (!isPdf) return this.send("❗ PDF fayl yuboring. /vositalar");
-        await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
-        const lines = await pdfToLines(await this.downloadTg(d.file_id));
-        const text = lines.join("\n").trim();
-        if (!text) return this.send("❗ PDF ichida matn topilmadi — u skanerlangan (rasm) bo'lishi mumkin.");
-        await this.sendFile(new TextEncoder().encode("\ufeff" + text), name.replace(/\.[^.]+$/, "") + ".txt", `📄 ${lines.length} qator matn`, "text/plain");
-        return this.send("✅ Tayyor. Yana: /vositalar");
-      }
-    } catch (e) {
-      console.log("Vosita xatosi", e);
-      return this.send(`❗ Faylni qayta ishlab bo'lmadi: <code>${esc(String(e?.message || e).slice(0, 120))}</code>`);
+    tool.files = [file];
+    // Sahifa sonini bilish kerak bo'lgan vositalar uchun faylni oldindan ochib ko'ramiz
+    if (T.needPages) {
+      try { tool.pages = await pageCount(await this.downloadTg(file.id)); }
+      catch (e) { await this.st.delete("tool"); return this.send(`❗ ${esc(e.message)} /vositalar`); }
     }
+    await this.st.put("tool", tool);
+    return this.askToolStep(tool);
   }
-  async runTool(msgId) {
+  // Keyingi sozlamani so'rash yoki bajarish
+  async askToolStep(tool, editId) {
+    const T = TOOLS[tool.kind];
+    const step = (T.steps || []).find((s) => tool.opts[s.key] === undefined);
+    if (!step) return this.runTool(editId, tool);
+    tool.step = step.key;
+    await this.st.put("tool", tool);
+    const head = tool.pages ? `📄 <b>${esc(tool.files[0].name)}</b> — ${tool.pages} sahifa\n\n` : tool.files.length > 1 ? `${T.icon} ${tool.files.length} ta fayl\n\n` : "";
+    const rows = (step.choices || []).map((row) => row.map(([label, v]) => btn(label, `tl:o:${v}`)));
+    rows.push([btn("❌ Bekor qilish", "tl:cancel")]);
+    const text = head + step.q + (step.text ? "\n\n<i>Javobni xabar qilib yozing.</i>" : "");
+    return editId ? this.edit(editId, text, { reply_markup: kb(rows) }) : this.send(text, { reply_markup: kb(rows) });
+  }
+  async onToolOpt(val, msgId) {
     const tool = await this.st.get("tool");
-    if (!tool?.files?.length) return this.edit(msgId, "❗ Hali fayl yuborilmadi.");
-    if (tool.kind === "merge" && tool.files.length < 2) return this.edit(msgId, "❗ Birlashtirish uchun kamida 2 ta PDF kerak.", { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) });
+    if (!tool?.step) return this.edit(msgId, "❗ Muddati o'tgan. Qaytadan: /vositalar");
+    const step = TOOLS[tool.kind].steps.find((s) => s.key === tool.step);
+    if (val === "__text") { tool.textFor = step.key; tool.opts[step.key] = undefined; await this.st.put("tool", tool);
+      return this.edit(msgId, step.textQ || step.q, { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) }); }
+    tool.opts[step.key] = val;
+    tool.step = null;
+    if (step.then) step.then(tool, val);
+    return this.askToolStep(tool, msgId);
+  }
+  async onToolText(m) {
+    const tool = await this.st.get("tool");
+    const T = TOOLS[tool.kind];
+    const step = T.steps.find((s) => s.key === (tool.textFor || tool.step));
+    if (!step || (!step.text && !tool.textFor)) return this.send("Yuqoridagi tugmalardan birini tanlang yoki /cancel");
+    const v = (m.text || "").trim();
+    if (step.check) { const err = step.check(v, tool); if (err) return this.send(`❗ ${esc(err)}\nQaytadan yozing yoki /cancel`); }
+    tool.opts[step.key] = v;
+    tool.step = null; tool.textFor = null;
+    return this.askToolStep(tool);
+  }
+  async runTool(msgId, tool) {
+    tool ||= await this.st.get("tool");
+    const T = TOOLS[tool?.kind];
+    if (!tool?.files?.length) return msgId ? this.edit(msgId, "❗ Hali fayl yuborilmadi.") : this.send("❗ Hali fayl yuborilmadi.");
+    if (T.min && tool.files.length < T.min)
+      return this.edit(msgId, `❗ Kamida ${T.min} ta fayl kerak.`, { reply_markup: kb([[btn("❌ Bekor qilish", "tl:cancel")]]) });
+    // Ko'p faylli vositada sozlamalar «Tayyor» bosilgandan keyin so'raladi
+    if (T.multi && (T.steps || []).some((s) => tool.opts[s.key] === undefined) && !tool.asked) {
+      tool.asked = true;
+      if (tool.status && tool.status !== msgId) await this.tgx("deleteMessage", { chat_id: this.chatId, message_id: tool.status });
+      return this.askToolStep(tool, msgId);
+    }
     await this.st.delete("tool");
-    await this.edit(msgId, "⏳ Tayyorlanmoqda…");
+    const say = (t) => (msgId ? this.edit(msgId, t) : this.send(t));
+    await say("⏳ Tayyorlanmoqda…");
     await this.tgx("sendChatAction", { chat_id: this.chatId, action: "upload_document" });
+    const base = (tool.files[0].name || "fayl").replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 50) || "fayl";
     try {
-      const { PDFDocument } = await import("./pdf-lib.js");
-      const out = await PDFDocument.create();
-      let pages = 0, skipped = 0;
-      for (const f of tool.files) {
-        const bytes = await this.downloadTg(f.id);
-        if (tool.kind === "img") {
-          const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
-          const isJpg = bytes[0] === 0xff && bytes[1] === 0xd8;
-          if (!isPng && !isJpg) { skipped++; continue; }
-          const img = isPng ? await out.embedPng(bytes) : await out.embedJpg(bytes);
-          // A4 sahifa, rasm yo'nalishiga qarab; rasm chetlardan 20pt joy qoldirib markazga joylanadi
-          const land = img.width > img.height;
-          const [W, H] = land ? [842, 595] : [595, 842];
-          const k = Math.min((W - 40) / img.width, (H - 40) / img.height);
-          const w = img.width * k, h = img.height * k;
-          out.addPage([W, H]).drawImage(img, { x: (W - w) / 2, y: (H - h) / 2, width: w, height: h });
-          pages++;
-        } else {
-          let src;
-          try { src = await PDFDocument.load(bytes, { ignoreEncryption: true }); } catch { skipped++; continue; }
-          const copied = await out.copyPages(src, src.getPageIndices());
-          copied.forEach((p) => out.addPage(p));
-          pages += copied.length;
-        }
+      const out = await T.run(tool.opts, async () => Promise.all(tool.files.map((f) => this.downloadTg(f.id))), tool);
+      const files = out.files || [{ bytes: out.bytes, name: `${base}${out.suffix || ""}.${out.ext || "pdf"}` }];
+      if (!files.length) return say(`❗ ${out.empty || "Natija bo'sh."} /vositalar`);
+      const big = files.reduce((a, f) => a + f.bytes.length, 0);
+      const send = async (bytes, nm, cap) => {
+        if (bytes.length > 49 * 1024 * 1024) throw new Error("Natija 50 MB dan katta — Telegram yuborishga ruxsat bermaydi");
+        const r = await this.sendFile(bytes, nm, cap, MIME[nm.split(".").pop()] || "application/octet-stream");
+        if (!r.ok) throw new Error("Faylni yuborib bo'lmadi");
+      };
+      if (files.length <= 5) {
+        for (let i = 0; i < files.length; i++) await send(files[i].bytes, files[i].name, i === files.length - 1 ? out.caption : undefined);
+      } else {
+        if (big > 49 * 1024 * 1024) throw new Error("Natija 50 MB dan katta — kamroq qismga bo'ling");
+        await send(makeZip(files.map((f) => ({ name: f.name, bytes: f.bytes }))), `${base}${out.zipSuffix || ""}.zip`, `🗂 ${files.length} ta fayl ZIP arxivda.\n${out.caption || ""}`);
       }
-      if (!pages) return this.send("❗ Fayllarni o'qib bo'lmadi.");
-      const data = await out.save({ useObjectStreams: true });
-      if (data.length > 49 * 1024 * 1024) return this.send("❗ Natija 50 MB dan katta — Telegram yuborishga ruxsat bermaydi. Kamroq fayl bilan urinib ko'ring.");
-      const r = await this.sendFile(data, tool.kind === "img" ? "LingoUP_rasmlar.pdf" : "LingoUP_birlashtirilgan.pdf",
-        `✅ ${pages} sahifa` + (skipped ? ` · ⚠️ ${skipped} ta fayl o'qilmadi` : ""), "application/pdf");
-      if (!r.ok) return this.send("❗ Faylni yuborib bo'lmadi.");
-      return this.edit(msgId, "✅ Tayyor. Yana: /vositalar");
+      return say("✅ Tayyor. Yana: /vositalar");
     } catch (e) {
       console.log("Vosita xatosi", e);
-      return this.send(`❗ Xatolik: <code>${esc(String(e?.message || e).slice(0, 120))}</code>`);
+      return say(`❗ ${esc(String(e?.message || e).slice(0, 200))}\n\nQaytadan: /vositalar`);
     }
   }
 
@@ -1219,6 +1326,10 @@ export class Chat extends DurableObject {
     if (isPrivate && !text.startsWith("/") && (m.photo || (m.text && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE, BTN_TOOLS, BTN_OMR].includes(text)))
       && ((await this.st.get("awaitBrand")) || 0) > Date.now()) return this.brandInput(m);
     if (isPrivate && !text.startsWith("/") && (await this.st.get("awaitCpost"))) return this.cpostChannel(m);
+    if (isPrivate && m.text && !text.startsWith("/") && ![BTN_NEW, BTN_MY, BTN_CAT, BTN_REVIEW, BTN_GUIDE, BTN_AUTHOR, BTN_AD, BTN_SET, BTN_DONATE, BTN_TOOLS, BTN_OMR].includes(text)) {
+      const tl = await this.st.get("tool");
+      if (tl && (tl.textFor || TOOLS[tl.kind]?.steps?.find((x) => x.key === tl.step)?.text)) return this.onToolText(m);
+    }
     // Javob varaqasini tekshirish rejimi: surat kelsa — skaner qilamiz
     if (isPrivate && (m.photo || /^image\//.test(m.document?.mime_type || "")) && (await this.st.get("awaitScan"))) return this.scanPhoto(m);
     if (text.startsWith("/")) {
@@ -1387,7 +1498,7 @@ export class Chat extends DurableObject {
           await this.st.delete("edit");
           return this.send("❌ Bekor qilindi.");
         case "version":
-          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v8 (faqat bot)</b>");
+          return this.send("🛠 Bot versiyasi: <b>2026-10-19 · v9 (PDF vositalari)</b>");
         case "skip":
           if (isPrivate) return this.onSkip();
           return;
@@ -2660,7 +2771,8 @@ export class Chat extends DurableObject {
       await answer();
       if (val === "cancel") { await this.st.delete("tool"); return this.edit(msgId, "❌ Bekor qilindi. /vositalar"); }
       if (val === "go") return this.runTool(msgId);
-      if (["img", "merge", "csv", "txt"].includes(val)) return this.startTool(val, msgId);
+      if (val.startsWith("o:")) return this.onToolOpt(val.slice(2), msgId);
+      if (TOOLS[val]) return this.startTool(val, msgId);
       return this.toolsMenu(msgId);
     }
     if (kind === "sup") {

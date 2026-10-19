@@ -29,7 +29,7 @@ export const pdfStr = (s) => String(s ?? "")
   .replace(/[ʻ‘`´]/g, "‘").replace(/[ʼ’]/g, "’").replace(/[—–]/g, "-").replace(/\t/g, " ")
   .replace(/[şŞğĞıİ]/g, (c) => TR[c])
   .replace(/[^\x20-\x7E -ÿ‘’“”•…€™ŠšŒœŽžŸƒ]/g, "?");
-async function fonts(doc, StandardFonts, PDFName) {
+export async function fonts(doc, StandardFonts, PDFName) {
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const fix = async () => {
